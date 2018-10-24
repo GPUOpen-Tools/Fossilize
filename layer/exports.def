@@ -1,4 +1,4 @@
-LIBRARY VkLayer_fossilize
+LIBRARY VK_LAYER_RGA_pipeline_extraction
 EXPORTS
 vkGetInstanceProcAddr
 vkGetDeviceProcAddr
