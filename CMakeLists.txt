@@ -22,8 +22,20 @@ if (FOSSILIZE_SANITIZE_THREADS)
 	set(FOSSILIZE_LINK_FLAGS ${FOSSILIZE_LINK_FLAGS} -fsanitize=thread)
 endif()
 
-add_library(fossilize STATIC fossilize.hpp fossilize.cpp varint.cpp varint.hpp)
-target_include_directories(fossilize PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+# RGA source files.
+file(GLOB  RGA_SOURCE_FILES
+    "${PROJECT_SOURCE_DIR}/rga/Vulkan/Src/*.cpp"
+   "${PROJECT_SOURCE_DIR}/rga/Vulkan/Src/Converters/*.cpp"
+)
+
+# RGA include files.
+file(GLOB  RGA_INCLUDES
+    "${PROJECT_SOURCE_DIR}/rga/Vulkan/Include/*.h"
+    "${PROJECT_SOURCE_DIR}/rga/Vulkan/Include/Converters/*.h"
+)
+
+add_library(fossilize STATIC fossilize.hpp fossilize.cpp varint.cpp varint.hpp ${RGA_SOURCE_FILES})
+target_include_directories(fossilize PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${RGA_INCLUDES})
 target_compile_options(fossilize PUBLIC ${FOSSILIZE_CXX_FLAGS})
 
 option(FOSSILIZE_VULKAN_LAYER "Build Vulkan layer." ON)

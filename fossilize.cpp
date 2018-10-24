@@ -27,6 +27,7 @@
 #include <string.h>
 #include "rapidjson/prettywriter.h"
 #include "varint.hpp"
+#include "rga/Vulkan/Include/Converters/rgFossilizeConverter.h"
 
 using namespace std;
 using namespace rapidjson;
@@ -2052,7 +2053,7 @@ static std::string encode_base64(const void *data_, size_t size)
 	return ret;
 }
 
-vector<uint8_t> StateRecorder::serialize() const
+vector<uint8_t> StateRecorder::serialize(const std::string& rgaOutputPath) const
 {
 	uint64_t varint_spirv_offset = 0;
 
@@ -2569,6 +2570,11 @@ vector<uint8_t> StateRecorder::serialize() const
 		graphics_pipelines.PushBack(p, alloc);
 	}
 	doc.AddMember("graphicsPipelines", graphics_pipelines, alloc);
+
+    // Save the RGA pipeline state.
+    std::vector<std::string> rgaPsoFiles;
+    bool isConversionSuccessful = rgFossilizeConverter::Convert(doc, rgaOutputPath, rgaPsoFiles);
+    assert(isConversionSuccessful);
 
 	StringBuffer buffer;
 	PrettyWriter<StringBuffer> writer(buffer);

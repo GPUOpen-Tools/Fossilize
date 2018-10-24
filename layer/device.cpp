@@ -81,19 +81,16 @@ void Device::init(VkPhysicalDevice gpu, VkDevice device, VkLayerInstanceDispatch
 		LOGI("Enabling paranoid serialization mode.\n");
 	}
 #else
-	const char *path = getenv("FOSSILIZE_DUMP_PATH");
+	const char *path = getenv("RGA_LAYER_OUTPUT_PATH");
 	if (path)
 	{
 		serializationPath = path;
 		LOGI("Overriding serialization path: \"%s\".\n", path);
 	}
 
-	const char *paranoid = getenv("FOSSILIZE_PARANOID_MODE");
-	if (paranoid && strtoul(paranoid, nullptr, 0) != 0)
-	{
-		paranoidMode = true;
-		LOGI("Enabling paranoid serialization mode.\n");
-	}
+    // Assume paranoid mode.
+    paranoidMode = true;
+    LOGI("Enabling paranoid serialization mode.\n");
 #endif
 
 #ifndef _WIN32
@@ -140,7 +137,7 @@ bool Device::serializeToPath(const std::string &path)
 {
 	try
 	{
-		auto result = recorder.serialize();
+		auto result = recorder.serialize(path);
 		FILE *file = fopen(path.c_str(), "wb");
 		if (file)
 		{
