@@ -88,8 +88,8 @@ void Device::init(VkPhysicalDevice gpu, VkDevice device, VkLayerInstanceDispatch
 		LOGI("Overriding serialization path: \"%s\".\n", path);
 	}
 
-    // Assume paranoid mode.
-    paranoidMode = true;
+    // Assume no paranoid mode.
+    paranoidMode = false;
     LOGI("Enabling paranoid serialization mode.\n");
 #endif
 
@@ -138,7 +138,10 @@ bool Device::serializeToPath(const std::string &path)
 	try
 	{
 		auto result = recorder.serialize(path);
-		FILE *file = fopen(path.c_str(), "wb");
+#ifdef _DEBUG
+        const char* STR_FOSSILIZE_FILE_NAME = "fossilize.json";
+        std::string fossilizeOutputFileName = path + "/" + STR_FOSSILIZE_FILE_NAME;
+		FILE *file = fopen(fossilizeOutputFileName.c_str(), "wb");
 		if (file)
 		{
 			if (fwrite(result.data(), 1, result.size(), file) != result.size())
@@ -152,6 +155,7 @@ bool Device::serializeToPath(const std::string &path)
 			LOGE("Failed to open file for writing: \"%s\".\n", path.c_str());
 			return false;
 		}
+#endif // _DEBUG
 	}
 	catch (const std::exception &e)
 	{

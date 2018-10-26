@@ -4,6 +4,7 @@
 #include <cassert>
 #include <algorithm>
 #include <sstream>
+#include <map>
 
 // C.
 #include <stdint.h>
@@ -29,6 +30,7 @@ static const char* STR_FOSSILIZE_NODE_SAMPLERS = "samplers";
 static const char* STR_FOSSILIZE_NODE_SET_LAYOUTS = "setLayouts";
 static const char* STR_FOSSILIZE_NODE_BINDINGS = "bindings";
 static const char* STR_FOSSILIZE_NODE_PIPELINE_LAYOUTS = "pipelineLayouts";
+static const char* STR_FOSSILIZE_NODE_SHADER_MODULES = "shaderModules";
 static const char* STR_FOSSILIZE_NODE_RENDER_PASSES = "renderPasses";
 static const char* STR_FOSSILIZE_NODE_GRAPHICS_PIPELINES = "graphicsPipelines";
 static const char* STR_FOSSILIZE_NODE_HASH = "hash";
@@ -64,6 +66,11 @@ static const char* STR_FOSSILIZE_NODE_PIPELINE_LAYOUT_PUSH_CONSTANT_RANGES = "pu
 static const char* STR_FOSSILIZE_NODE_PUSH_CONSTANT_RANGES_STAGE_FLAGS = "stageFlags";
 static const char* STR_FOSSILIZE_NODE_PUSH_CONSTANT_RANGES_SIZE = "size";
 static const char* STR_FOSSILIZE_NODE_PUSH_CONSTANT_RANGES_OFFSET = "offset";
+
+// String constants - shader stages.
+static const char* STR_FOSSILIZE_NODE_PIPELINE_STAGES_NAME = "name";
+static const char* STR_FOSSILIZE_NODE_PIPELINE_STAGES_MODULE = "module";
+static const char* STR_FOSSILIZE_NODE_PIPELINE_STAGES_STAGE = "stage";
 
 // String constants - render passes.
 static const char* STR_FOSSILIZE_NODE_RENDER_PASS_SUB_PASS_DEPENDENCIES = "dependencies";
@@ -193,6 +200,11 @@ static const char* STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_PASS_OP = "pa
 static const char* STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_FAIL_OP = "failOp";
 static const char* STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_DEPTH_FAIL_OP = "depthFailOp";
 
+// String constants - notifications.
+static const char* STR_ERROR_SPIRV_SERIALIZATION_FORMATTED = "Failed to write serialized SPIR-V binary to disk: %s.\n";
+static const char* STR_ERROR_SPIRV_SERIALIZATION_WRITE_FORMATTED = "Failed to open file for writing: \"%s\".\n";
+static const char* STR_ERROR_SPIRV_SERIALIZATION_SUCCESS_FORMATTED = "Serialized SPIR-V binary to \"%s\".\n";
+
 static std::vector<uint8_t> LoadBufferFromFile(const char* path)
 {
     FILE *pFile = fopen(path, "rb");
@@ -281,41 +293,8 @@ static bool ToVkSamplerCreateInfo(const rapidjson::Value& sampler, VkSamplerCrea
     return ret;
 }
 
-bool rgFossilizeConverter::Convert(const std::string& pathToFossilizeFile, const std::string& outputDirectory, std::vector<std::string>& rgaPsoFiles)
-{
-    bool ret = false;
-
-    // Load the binary data from the Fossilize JSON file.
-    std::vector<uint8_t> stateJson = LoadBufferFromFile(pathToFossilizeFile.c_str());
-    const uint8_t * buffer = stateJson.data();
-    const uint8_t * bufferAccum = buffer;
-
-    // Skip the Fossilize header.
-    const size_t FOSSILIZE_HEADER_BYTES = 16;
-    bufferAccum += FOSSILIZE_HEADER_BYTES;
-
-    // Get the size of the state.
-    uint64_t state_size = 0;
-    memcpy(&state_size, bufferAccum, sizeof(uint64_t));
-    bufferAccum += sizeof(uint64_t);
-
-    // Skip the Fossilize magic number.
-    bufferAccum += sizeof(uint64_t);
-
-    // Extract the size of the JSON content.
-    uint64_t json_size = 0;
-    memcpy(&json_size, bufferAccum, sizeof(uint64_t));
-    bufferAccum += sizeof(uint64_t);
-
-    // Parse the document.
-    Document doc;
-    doc.Parse(reinterpret_cast<const char *>(bufferAccum), json_size);
-
-    // Convert to RGA format.
-    return rgFossilizeConverter::Convert(doc, outputDirectory, rgaPsoFiles);
-}
-
-bool rgFossilizeConverter::Convert(const rapidjson::Document& doc, const std::string& outputDirectory, std::vector<std::string>& rgaPsoFiles)
+bool rgFossilizeConverter::Convert(const rapidjson::Document& doc, const std::string& outputDirectory,
+    const std::map<uint32_t, VkShaderModuleCreateInfo>& shaderModules, std::vector<std::string>& rgaPsoFiles)
 {
     bool ret = false;
 
@@ -360,7 +339,7 @@ bool rgFossilizeConverter::Convert(const rapidjson::Document& doc, const std::st
         assert(ret = ret && descriptorSetLayout[STR_FOSSILIZE_NODE_FLAGS].IsUint());
 
         // Descriptor set layout bindings.
-        std::vector<VkDescriptorSetLayoutBinding*> rgaDescriptorSetLayoutBindings;
+        std::vector<VkDescriptorSetLayoutBinding> rgaDescriptorSetLayoutBindings;
         assert(ret = ret && descriptorSetLayout.HasMember(STR_FOSSILIZE_NODE_BINDINGS));
         assert(ret = ret && descriptorSetLayout[STR_FOSSILIZE_NODE_BINDINGS].IsArray());
         for (const auto& binding : descriptorSetLayout[STR_FOSSILIZE_NODE_BINDINGS].GetArray())
@@ -378,18 +357,18 @@ bool rgFossilizeConverter::Convert(const rapidjson::Document& doc, const std::st
             assert(ret = ret && binding[STR_FOSSILIZE_NODE_DESCRIPTOR_SET_LAYOUT_BINDING_BINDING].IsUint());
 
             // Allocate and reset.
-            VkDescriptorSetLayoutBinding* pBinding = new VkDescriptorSetLayoutBinding{};
+            VkDescriptorSetLayoutBinding bindingStructure{};
 
             if (ret)
             {
                 // Fill up the structure.
-                pBinding->descriptorType = static_cast<VkDescriptorType>(binding[STR_FOSSILIZE_NODE_DESCRIPTOR_SET_LAYOUT_BINDING_DESC_TYPE].GetUint());
-                pBinding->descriptorCount = binding[STR_FOSSILIZE_NODE_DESCRIPTOR_SET_LAYOUT_BINDING_DESC_COUNT].GetUint();
-                pBinding->stageFlags = binding[STR_FOSSILIZE_NODE_DESCRIPTOR_SET_LAYOUT_BINDING_STAGE_FLAGS].GetUint();
-                pBinding->binding = binding[STR_FOSSILIZE_NODE_DESCRIPTOR_SET_LAYOUT_BINDING_BINDING].GetUint();
+                bindingStructure.descriptorType = static_cast<VkDescriptorType>(binding[STR_FOSSILIZE_NODE_DESCRIPTOR_SET_LAYOUT_BINDING_DESC_TYPE].GetUint());
+                bindingStructure.descriptorCount = binding[STR_FOSSILIZE_NODE_DESCRIPTOR_SET_LAYOUT_BINDING_DESC_COUNT].GetUint();
+                bindingStructure.stageFlags = binding[STR_FOSSILIZE_NODE_DESCRIPTOR_SET_LAYOUT_BINDING_STAGE_FLAGS].GetUint();
+                bindingStructure.binding = binding[STR_FOSSILIZE_NODE_DESCRIPTOR_SET_LAYOUT_BINDING_BINDING].GetUint();
 
                 // Add the binding to our collection.
-                rgaDescriptorSetLayoutBindings.push_back(pBinding);
+                rgaDescriptorSetLayoutBindings.push_back(bindingStructure);
             }
         }
 
@@ -398,17 +377,21 @@ bool rgFossilizeConverter::Convert(const rapidjson::Document& doc, const std::st
         pDescSetLayoutCreateInfo->sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
         pDescSetLayoutCreateInfo->bindingCount = static_cast<uint32_t>(rgaDescriptorSetLayoutBindings.size());
 
-        // Copy the binding pointers.
+        // Copy the binding structures.
         if (pDescSetLayoutCreateInfo->bindingCount > 0)
         {
-            pDescSetLayoutCreateInfo->pBindings = new VkDescriptorSetLayoutBinding[pDescSetLayoutCreateInfo->bindingCount]{};
-            std::copy(rgaDescriptorSetLayoutBindings.begin(), rgaDescriptorSetLayoutBindings.end(), &pDescSetLayoutCreateInfo->pBindings);
+            VkDescriptorSetLayoutBinding* pDescriptorLayoutBindings = new VkDescriptorSetLayoutBinding[pDescSetLayoutCreateInfo->bindingCount]{};
+            for (uint32_t i = 0; i < rgaDescriptorSetLayoutBindings.size(); i++)
+            {
+                pDescriptorLayoutBindings[i] = rgaDescriptorSetLayoutBindings[i];
+            }
+
+            // Assign to the create info structure.
+            pDescSetLayoutCreateInfo->pBindings = pDescriptorLayoutBindings;
         }
 
         // Add the descriptor set layout create info to our collection.
         rgaDescriptorSetLayouts.push_back(pDescSetLayoutCreateInfo);
-
-        //std::cout << "Has of set layout is " << setLayout[STR_FOSSILIZE_NODE_HASH].GetUint64() << std::endl;
     }
 
     // Pipeline layouts.
@@ -433,7 +416,6 @@ bool rgFossilizeConverter::Convert(const rapidjson::Document& doc, const std::st
         if (ret)
         {
             // Push constant ranges.
-            //std::vector<VkPushConstantRange> rgaPushConstantRanges;
             auto pushConstantRangesArray = pipelineLayout[STR_FOSSILIZE_NODE_PIPELINE_LAYOUT_PUSH_CONSTANT_RANGES].GetArray();
             uint32_t pushConstantRangesCount = pushConstantRangesArray.Size();
 
@@ -487,6 +469,8 @@ bool rgFossilizeConverter::Convert(const rapidjson::Document& doc, const std::st
             rgaPipelineLayouts.push_back(pRgaPipelineCreateInfo);
         }
     }
+
+    // Shader modules: we get them as an argument, so we don't need to process that node. Skip to render passes.
 
     // Render passes.
     std::vector<VkRenderPassCreateInfo*> rgaRenderPasses;
@@ -1249,16 +1233,108 @@ bool rgFossilizeConverter::Convert(const rapidjson::Document& doc, const std::st
 
         // Serialize our pipeline recipe.
         std::stringstream outputFileName;
-        //outputFileName << "C:\\Temp\\RGA_LAYER_OUTPUT\\myPso" << ++graphicsPipelineIndex << ".pso";
-        outputFileName << outputDirectory << "/" << "rgaPso" << ++graphicsPipelineIndex << ".pso";
+        outputFileName << outputDirectory << "/" << "rgaPso" << ++graphicsPipelineIndex;
+
+        std::string baseOutputFileName = outputFileName.str().c_str();
+        std::string psoOutputFileName = outputFileName.str().c_str();
+        psoOutputFileName.append(".pso");
+
         std::string errMsg;
-        bool isGraphicsPipelineSerialized = rgPsoSerializerVulkan::WriteStructureToFile(pGraphicsPipelineRecipe, outputFileName.str(), errMsg);
+        bool isGraphicsPipelineSerialized = rgPsoSerializerVulkan::WriteStructureToFile(pGraphicsPipelineRecipe, psoOutputFileName, errMsg);
         assert(isGraphicsPipelineSerialized);
 
         // Add the file to the output buffer.
         if (isGraphicsPipelineSerialized)
         {
             rgaPsoFiles.push_back(outputFileName.str().c_str());
+
+            // Serialize the graphics pipeline's shaders.
+            for (const auto& shaderStage : graphicsPipeline[STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_STAGES].GetArray())
+            {
+                // Verify that the members exist.
+                assert(ret = ret && shaderStage.HasMember(STR_FOSSILIZE_NODE_FLAGS));
+                assert(ret = ret && shaderStage.HasMember(STR_FOSSILIZE_NODE_PIPELINE_STAGES_NAME));
+                assert(ret = ret && shaderStage.HasMember(STR_FOSSILIZE_NODE_PIPELINE_STAGES_MODULE));
+                assert(ret = ret && shaderStage.HasMember(STR_FOSSILIZE_NODE_PIPELINE_STAGES_STAGE));
+
+                // Verify the type.
+                assert(ret = ret && shaderStage[STR_FOSSILIZE_NODE_FLAGS].IsUint());
+                assert(ret = ret && shaderStage[STR_FOSSILIZE_NODE_PIPELINE_STAGES_NAME].IsString());
+                assert(ret = ret && shaderStage[STR_FOSSILIZE_NODE_PIPELINE_STAGES_MODULE].IsUint());
+                assert(ret = ret && shaderStage[STR_FOSSILIZE_NODE_PIPELINE_STAGES_STAGE].IsUint());
+
+                std::string entryPointName = shaderStage[STR_FOSSILIZE_NODE_PIPELINE_STAGES_NAME].GetString();
+                uint32_t shaderModuleIndex = shaderStage[STR_FOSSILIZE_NODE_PIPELINE_STAGES_MODULE].GetUint();
+                VkShaderStageFlagBits stageFlags = static_cast<VkShaderStageFlagBits>(shaderStage[STR_FOSSILIZE_NODE_PIPELINE_STAGES_STAGE].GetUint());
+
+                // Construct the file name for the output SPIR-V file.
+                std::stringstream spirvFileName;
+                spirvFileName << baseOutputFileName << "_";
+
+                // Append the stage name.
+                switch (stageFlags)
+                {
+                case VK_SHADER_STAGE_VERTEX_BIT:
+                    spirvFileName << "vert";
+                    break;
+                case VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT:
+                    spirvFileName << "tesc";
+                    break;
+                case VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT:
+                    spirvFileName << "tese";
+                    break;
+                case VK_SHADER_STAGE_GEOMETRY_BIT:
+                    spirvFileName << "geom";
+                    break;
+                case VK_SHADER_STAGE_FRAGMENT_BIT:
+                    spirvFileName << "frag";
+                    break;
+                case VK_SHADER_STAGE_COMPUTE_BIT:
+                    spirvFileName << "comp";
+                    break;
+                case VK_SHADER_STAGE_ALL_GRAPHICS:
+                case VK_SHADER_STAGE_ALL:
+                default:
+                    // Unknown shader stage.
+                    assert(false);
+                    break;
+                }
+
+                // Append the entry point name.
+                spirvFileName << "_" << entryPointName;
+
+                // Append the extension.
+                spirvFileName << ".spv";
+
+                // Locate the shader module in the map and serialize.
+                assert(shaderModuleIndex <= shaderModules.size());
+                if (shaderModuleIndex <= shaderModules.size())
+                {
+                    auto iter = shaderModules.find(shaderModuleIndex-1);
+                    assert(iter != shaderModules.end());
+                    if (iter != shaderModules.end())
+                    {
+                        // Save the binary SPIR-V data to the disk.
+                        FILE *file = fopen(spirvFileName.str().c_str(), "wb");
+                        if (file)
+                        {
+                            if (fwrite(iter->second.pCode, 1, iter->second.codeSize, file) != iter->second.codeSize)
+                            {
+                                printf(STR_ERROR_SPIRV_SERIALIZATION_FORMATTED, spirvFileName.str().c_str());
+                            }
+                            else
+                            {
+                                printf(STR_ERROR_SPIRV_SERIALIZATION_SUCCESS_FORMATTED, spirvFileName.str().c_str());
+                            }
+                            fclose(file);
+                        }
+                        else
+                        {
+                            printf(STR_ERROR_SPIRV_SERIALIZATION_WRITE_FORMATTED, spirvFileName.str().c_str());
+                        }
+                    }
+                }
+            }
         }
 
 #ifdef _FOSSILIZE_PARSE_TEST

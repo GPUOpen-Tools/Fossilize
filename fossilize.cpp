@@ -28,6 +28,7 @@
 #include "rapidjson/prettywriter.h"
 #include "varint.hpp"
 #include "rga/Vulkan/Include/Converters/rgFossilizeConverter.h"
+#include <map>
 
 using namespace std;
 using namespace rapidjson;
@@ -2571,11 +2572,6 @@ vector<uint8_t> StateRecorder::serialize(const std::string& rgaOutputPath) const
 	}
 	doc.AddMember("graphicsPipelines", graphics_pipelines, alloc);
 
-    // Save the RGA pipeline state.
-    std::vector<std::string> rgaPsoFiles;
-    bool isConversionSuccessful = rgFossilizeConverter::Convert(doc, rgaOutputPath, rgaPsoFiles);
-    assert(isConversionSuccessful);
-
 	StringBuffer buffer;
 	PrettyWriter<StringBuffer> writer(buffer);
 	doc.Accept(writer);
@@ -2614,8 +2610,22 @@ vector<uint8_t> StateRecorder::serialize(const std::string& rgaOutputPath) const
 	memcpy(buf, &varint_spirv_offset, sizeof(uint64_t));
 	buf += sizeof(uint64_t);
 
-	for (auto &module : this->shader_modules)
-		buf = encode_varint(buf, module.info.pCode, module.info.codeSize / sizeof(uint32_t));
+    // Keep track of the shader modules over here.
+    std::map<uint32_t, VkShaderModuleCreateInfo> shaderModuleCache;
+
+    static int i = 0;
+    for (auto &module : this->shader_modules)
+    {
+        // Keep the create info for the shader module.
+        shaderModuleCache[i++] = module.info;
+
+        buf = encode_varint(buf, module.info.pCode, module.info.codeSize / sizeof(uint32_t));
+    }
+
+    // Save the RGA pipeline state.
+    std::vector<std::string> rgaPsoFiles;
+    bool isConversionSuccessful = rgFossilizeConverter::Convert(doc, rgaOutputPath, shaderModuleCache, rgaPsoFiles);
+    assert(isConversionSuccessful);
 
 	assert(uint64_t(buf - serialize_buffer.data()) == serialized_size);
 	return serialize_buffer;
