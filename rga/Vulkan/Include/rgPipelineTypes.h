@@ -46,6 +46,12 @@ public:
     // Get the pointer to the sampler create info structures.
     const std::vector<VkSamplerCreateInfo*> GetSamplerCreateInfo() const;
 
+    // Set the pipeline layout create info.
+    void SetPipelineLayoutCreateInfo(VkPipelineLayoutCreateInfo* pPipelineLayoutCreateInfo) { m_pPipelineLayoutCreateInfo = pPipelineLayoutCreateInfo; }
+
+    // Add a descriptor set layout create info structure.
+    void AddDescriptorSetLayoutCreateInfo(VkDescriptorSetLayoutCreateInfo* pDescriptorSetLayoutCreateInfo);
+
 protected:
     // Initialize the default pipeline layout create info.
     void InitializePipelineLayoutCreateInfo();
@@ -86,8 +92,6 @@ public:
     void SetColorBlendStateCreateInfo(VkPipelineColorBlendStateCreateInfo* pColorBlendStateCreateInfo) { /*m_pColorBlendStateCreateInfo*/ m_pipelineCreateInfo.pColorBlendState = pColorBlendStateCreateInfo; }
     void SetViweportStateCreateInfo(VkPipelineViewportStateCreateInfo* pViewportStateCreateInfo) { /*m_pViewportStateCreateInfo*/ m_pipelineCreateInfo.pViewportState = pViewportStateCreateInfo; }
     void SetDepthStencilStateCreateInfo(VkPipelineDepthStencilStateCreateInfo* pDepthStencilStateCreateInfo) { /*m_pDepthStencilStateCreateInfo*/ m_pipelineCreateInfo.pDepthStencilState = pDepthStencilStateCreateInfo; }
-    void SetPipelineLayoutCreateInfo(VkPipelineLayoutCreateInfo* pPipelineLayoutCreateInfo) { m_pPipelineLayoutCreateInfo = pPipelineLayoutCreateInfo; }
-    void AddDescriptorSetLayoutCreateInfo(VkDescriptorSetLayoutCreateInfo* pDescriptorSetLayoutCreateInfo);
 
     // *** Setters - END. ***
 

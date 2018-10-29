@@ -57,7 +57,7 @@ void rgPsoGraphicsVulkan::Initialize()
     InitializeRenderPassCreateInfo();
 }
 
-void rgPsoGraphicsVulkan::AddDescriptorSetLayoutCreateInfo(VkDescriptorSetLayoutCreateInfo* pDescriptorSetLayoutCreateInfo)
+void rgPsoCreateInfoVulkan::AddDescriptorSetLayoutCreateInfo(VkDescriptorSetLayoutCreateInfo* pDescriptorSetLayoutCreateInfo)
 {
     // Add the item to our descriptor set layout collection.
     m_descriptorSetLayoutCreateInfo.push_back(pDescriptorSetLayoutCreateInfo);

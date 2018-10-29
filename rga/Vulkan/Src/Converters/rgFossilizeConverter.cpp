@@ -33,6 +33,7 @@ static const char* STR_FOSSILIZE_NODE_PIPELINE_LAYOUTS = "pipelineLayouts";
 static const char* STR_FOSSILIZE_NODE_SHADER_MODULES = "shaderModules";
 static const char* STR_FOSSILIZE_NODE_RENDER_PASSES = "renderPasses";
 static const char* STR_FOSSILIZE_NODE_GRAPHICS_PIPELINES = "graphicsPipelines";
+static const char* STR_FOSSILIZE_NODE_COMPUTE_PIPELINES = "computePipelines";
 static const char* STR_FOSSILIZE_NODE_HASH = "hash";
 static const char* STR_FOSSILIZE_NODE_FLAGS = "flags";
 
@@ -71,6 +72,17 @@ static const char* STR_FOSSILIZE_NODE_PUSH_CONSTANT_RANGES_OFFSET = "offset";
 static const char* STR_FOSSILIZE_NODE_PIPELINE_STAGES_NAME = "name";
 static const char* STR_FOSSILIZE_NODE_PIPELINE_STAGES_MODULE = "module";
 static const char* STR_FOSSILIZE_NODE_PIPELINE_STAGES_STAGE = "stage";
+static const char* STR_FOSSILIZE_NODE_PIPELINE_STAGES_SPECIALIZATION_INFO = "specializationInfo";
+
+// String constants - specialization info.
+static const char* STR_FOSSILIZE_NODE_PIPELINE_STAGES_SPECIALIZATION_INFO_DATA_SIZE = "dataSize";
+static const char* STR_FOSSILIZE_NODE_PIPELINE_STAGES_SPECIALIZATION_INFO_DATA = "data";
+static const char* STR_FOSSILIZE_NODE_PIPELINE_STAGES_SPECIALIZATION_INFO_MAP_ENTRIES = "mapEntries";
+
+// String constants - map entries.
+static const char* STR_FOSSILIZE_NODE_PIPELINE_STAGES_SPECIALIZATION_INFO_MAP_ENTRIES_OFFSET = "offset";
+static const char* STR_FOSSILIZE_NODE_PIPELINE_STAGES_SPECIALIZATION_INFO_MAP_ENTRIES_SIZE = "size";
+static const char* STR_FOSSILIZE_NODE_PIPELINE_STAGES_SPECIALIZATION_INFO_MAP_ENTRIES_CONSTANT_ID = "constantID";
 
 // String constants - render passes.
 static const char* STR_FOSSILIZE_NODE_RENDER_PASS_SUB_PASS_DEPENDENCIES = "dependencies";
@@ -106,10 +118,12 @@ static const char* STR_FOSSILIZE_NODE_RENDER_PASS_SUB_PASS_DESCRIPTION_DEPTH_STE
 static const char* STR_FOSSILIZE_NODE_ATTACHMENT_REFERENCE_ATTACHMENT = "attachment";
 static const char* STR_FOSSILIZE_NODE_ATTACHMENT_REFERENCE_LAYOUT = "layout";
 
-// String constants - graphics pipeline.
+// String constants - graphics and compute pipelines.
 static const char* STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_BASE_PIPELINE_HANDLE = "basePipelineHandle";
 static const char* STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_BASE_PIPELINE_INDEX = "basePipelineIndex";
 static const char* STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_LAYOUT = "layout";
+
+// String constants - graphics pipeline specific.
 static const char* STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_RENDER_PASS = "renderPass";
 static const char* STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_SUB_PASS = "subpass";
 static const char* STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_DYNAMIC_STATE = "dynamicState";
@@ -121,6 +135,9 @@ static const char* STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_COLOR_BLEND_STATE = "col
 static const char* STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_VIEWPORT_STATE = "viewportState";
 static const char* STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_DEPTH_STENCIL_STATE = "depthStencilState";
 static const char* STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_STAGES = "stages";
+
+// String constants - compute pipeline specific.
+static const char* STR_FOSSILIZE_NODE_COMPUTE_PIPELINE_STAGE = "stage";
 
 // String constants - multi sample state.
 static const char* STR_FOSSILIZE_NODE_MULTI_SAMPLE_STATE_RASTERIZATION_SAMPLES = "rasterizationSamples";
@@ -203,7 +220,12 @@ static const char* STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_DEPTH_FAIL_OP
 // String constants - notifications.
 static const char* STR_ERROR_SPIRV_SERIALIZATION_FORMATTED = "Failed to write serialized SPIR-V binary to disk: %s.\n";
 static const char* STR_ERROR_SPIRV_SERIALIZATION_WRITE_FORMATTED = "Failed to open file for writing: \"%s\".\n";
-static const char* STR_ERROR_SPIRV_SERIALIZATION_SUCCESS_FORMATTED = "Serialized SPIR-V binary to \"%s\".\n";
+static const char* STR_SPIRV_SERIALIZATION_SUCCESS_FORMATTED = "Serialized SPIR-V binary to \"%s\".\n";
+
+// String constants - files.
+static const char* STR_FILE_EXTENSION_SPIRV = ".spv";
+static const char* STR_FILE_EXTENSION_PSO = ".pso";
+static const char* STR_FILE_BASE_FILENAME_PSO = "rgaPso";
 
 static std::vector<uint8_t> LoadBufferFromFile(const char* path)
 {
@@ -222,6 +244,30 @@ static std::vector<uint8_t> LoadBufferFromFile(const char* path)
     }
 
     fclose(pFile);
+    return ret;
+}
+
+static bool WriteBinaryFile(const std::string& outputFileName, const void* pCode, size_t codeSize)
+{
+    bool ret = false;
+    FILE *file = fopen(outputFileName.c_str(), "wb");
+    if (file)
+    {
+        if (fwrite(pCode, 1, codeSize, file) != codeSize)
+        {
+            printf(STR_ERROR_SPIRV_SERIALIZATION_FORMATTED, outputFileName.c_str());
+        }
+        else
+        {
+            printf(STR_SPIRV_SERIALIZATION_SUCCESS_FORMATTED, outputFileName.c_str());
+            ret = true;
+        }
+        fclose(file);
+    }
+    else
+    {
+        printf(STR_ERROR_SPIRV_SERIALIZATION_WRITE_FORMATTED, outputFileName.c_str());
+    }
     return ret;
 }
 
@@ -1233,11 +1279,11 @@ bool rgFossilizeConverter::Convert(const rapidjson::Document& doc, const std::st
 
         // Serialize our pipeline recipe.
         std::stringstream outputFileName;
-        outputFileName << outputDirectory << "/" << "rgaPso" << ++graphicsPipelineIndex;
+        outputFileName << outputDirectory << "/" << STR_FILE_BASE_FILENAME_PSO << ++graphicsPipelineIndex;
 
         std::string baseOutputFileName = outputFileName.str().c_str();
         std::string psoOutputFileName = outputFileName.str().c_str();
-        psoOutputFileName.append(".pso");
+        psoOutputFileName.append(STR_FILE_EXTENSION_PSO);
 
         std::string errMsg;
         bool isGraphicsPipelineSerialized = rgPsoSerializerVulkan::WriteStructureToFile(pGraphicsPipelineRecipe, psoOutputFileName, errMsg);
@@ -1289,9 +1335,157 @@ bool rgFossilizeConverter::Convert(const rapidjson::Document& doc, const std::st
                 case VK_SHADER_STAGE_FRAGMENT_BIT:
                     spirvFileName << "frag";
                     break;
+                // These are invalid.
+                case VK_SHADER_STAGE_COMPUTE_BIT:
+                case VK_SHADER_STAGE_ALL_GRAPHICS:
+                case VK_SHADER_STAGE_ALL:
+                default:
+                    // Unknown or invalid shader stage.
+                    assert(false);
+                    break;
+                }
+
+                // Append the entry point name.
+                spirvFileName << "_" << entryPointName;
+
+                // Append the extension.
+                spirvFileName << STR_FILE_EXTENSION_SPIRV;
+
+                // Locate the shader module in the map and serialize.
+                assert(shaderModuleIndex <= shaderModules.size());
+                if (shaderModuleIndex <= shaderModules.size())
+                {
+                    auto iter = shaderModules.find(shaderModuleIndex - 1);
+                    assert(iter != shaderModules.end());
+                    if (iter != shaderModules.end())
+                    {
+                        // Save the binary SPIR-V data to the disk.
+                        WriteBinaryFile(spirvFileName.str(), iter->second.pCode, iter->second.codeSize);
+                    }
+                }
+            }
+        }
+    }
+
+    // Compute pipelines.
+    std::vector<rgPsoComputeVulkan*> rgaComputePipelineRecipes;
+    assert(ret = ret && doc.HasMember(STR_FOSSILIZE_NODE_GRAPHICS_PIPELINES));
+    assert(ret = ret && doc[STR_FOSSILIZE_NODE_GRAPHICS_PIPELINES].IsArray());
+
+    // Track the index of the current compute pipeline.
+    uint32_t computePipelineIndex = 0;
+
+    for (const auto& computePipeline : doc[STR_FOSSILIZE_NODE_COMPUTE_PIPELINES].GetArray())
+    {
+        // Create and reset our compute pipeline create info structure.
+        rgPsoComputeVulkan* pComputePipelineRecipe = new rgPsoComputeVulkan{};
+
+        // Verify that the members exist.
+        assert(ret = ret && computePipeline.HasMember(STR_FOSSILIZE_NODE_HASH));
+        assert(ret = ret && computePipeline.HasMember(STR_FOSSILIZE_NODE_FLAGS));
+        assert(ret = ret && computePipeline.HasMember(STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_BASE_PIPELINE_HANDLE));
+        assert(ret = ret && computePipeline.HasMember(STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_BASE_PIPELINE_INDEX));
+        assert(ret = ret && computePipeline.HasMember(STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_LAYOUT));
+        assert(ret = ret && computePipeline.HasMember(STR_FOSSILIZE_NODE_COMPUTE_PIPELINE_STAGE));
+
+        // Verify the type.
+        assert(ret = ret && computePipeline[STR_FOSSILIZE_NODE_HASH].IsUint64());
+        assert(ret = ret && computePipeline[STR_FOSSILIZE_NODE_FLAGS].IsUint());
+        assert(ret = ret && computePipeline[STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_BASE_PIPELINE_HANDLE].IsUint());
+        assert(ret = ret && computePipeline[STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_BASE_PIPELINE_INDEX].IsInt());
+        assert(ret = ret && computePipeline[STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_LAYOUT].IsUint());
+        assert(ret = ret && computePipeline[STR_FOSSILIZE_NODE_COMPUTE_PIPELINE_STAGE].IsObject());
+
+        // Fill up our structure.
+        VkComputePipelineCreateInfo* pComputePiplineCreateInfo = pComputePipelineRecipe->GetComputePipelineCreateInfo();
+        assert(pComputePiplineCreateInfo != nullptr);
+        if (pComputePiplineCreateInfo != nullptr)
+        {
+            pComputePiplineCreateInfo->flags = static_cast<VkFlags>(computePipeline[STR_FOSSILIZE_NODE_FLAGS].GetUint());
+
+            // @TODO: figure out what should we do with this one. Is this a handle or an internal reference within the JSON.
+            pComputePiplineCreateInfo->sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+            pComputePiplineCreateInfo->basePipelineHandle = reinterpret_cast<VkPipeline>(computePipeline[STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_BASE_PIPELINE_HANDLE].GetInt64());
+            pComputePiplineCreateInfo->basePipelineIndex = static_cast<VkFlags>(computePipeline[STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_BASE_PIPELINE_INDEX].GetInt());
+
+            // Pipeline layouts and descriptor set layouts.
+            // Get the pipeline layout index within our collection.
+            uint32_t pipelineLayoutIndex = computePipeline[STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_LAYOUT].GetUint();
+            assert(pipelineLayoutIndex <= rgaPipelineLayouts.size());
+            if (pipelineLayoutIndex > 0)
+            {
+                assert(rgaPipelineLayouts[pipelineLayoutIndex - 1] != nullptr);
+                if (rgaPipelineLayouts[pipelineLayoutIndex - 1] != nullptr)
+                {
+                    VkPipelineLayoutCreateInfo* pPipelineLayoutCreateInfo = rgaPipelineLayouts[pipelineLayoutIndex - 1]->m_pVkPipelineLayoutCreateInfo;
+                    assert(pPipelineLayoutCreateInfo != nullptr);
+                    pComputePipelineRecipe->SetPipelineLayoutCreateInfo(pPipelineLayoutCreateInfo);
+
+                    // Add the descriptor set layout create info structures.
+                    for (size_t descriptorSetLayoutIndex : rgaPipelineLayouts[pipelineLayoutIndex - 1]->m_descriptorSetLayoutIndices)
+                    {
+                        assert(descriptorSetLayoutIndex <= rgaDescriptorSetLayouts.size());
+                        if (descriptorSetLayoutIndex <= rgaDescriptorSetLayouts.size())
+                        {
+                            pComputePipelineRecipe->AddDescriptorSetLayoutCreateInfo(rgaDescriptorSetLayouts[descriptorSetLayoutIndex - 1]);
+                        }
+                    }
+                }
+            }
+
+            // Serialize our pipeline recipe.
+            std::stringstream outputFileName;
+            outputFileName << outputDirectory << "/" << STR_FILE_BASE_FILENAME_PSO << ++graphicsPipelineIndex;
+
+            std::string baseOutputFileName = outputFileName.str().c_str();
+            std::string psoOutputFileName = outputFileName.str().c_str();
+            psoOutputFileName.append(STR_FILE_EXTENSION_PSO);
+
+            std::string errMsg;
+            bool isComputePipelineSerialized = rgPsoSerializerVulkan::WriteStructureToFile(pComputePipelineRecipe, psoOutputFileName, errMsg);
+            assert(isComputePipelineSerialized);
+
+            // Add the file to the output buffer.
+            if (isComputePipelineSerialized)
+            {
+                rgaPsoFiles.push_back(outputFileName.str().c_str());
+
+                // Serialize the compute pipeline's shader.
+                const auto& shaderStage = computePipeline[STR_FOSSILIZE_NODE_COMPUTE_PIPELINE_STAGE].GetObject();
+
+                // Verify that the members exist.
+                assert(ret = ret && shaderStage.HasMember(STR_FOSSILIZE_NODE_FLAGS));
+                assert(ret = ret && shaderStage.HasMember(STR_FOSSILIZE_NODE_PIPELINE_STAGES_NAME));
+                assert(ret = ret && shaderStage.HasMember(STR_FOSSILIZE_NODE_PIPELINE_STAGES_MODULE));
+                assert(ret = ret && shaderStage.HasMember(STR_FOSSILIZE_NODE_PIPELINE_STAGES_STAGE));
+
+                // Verify the type.
+                assert(ret = ret && shaderStage[STR_FOSSILIZE_NODE_FLAGS].IsUint());
+                assert(ret = ret && shaderStage[STR_FOSSILIZE_NODE_PIPELINE_STAGES_NAME].IsString());
+                assert(ret = ret && shaderStage[STR_FOSSILIZE_NODE_PIPELINE_STAGES_MODULE].IsUint());
+                assert(ret = ret && shaderStage[STR_FOSSILIZE_NODE_PIPELINE_STAGES_STAGE].IsUint());
+
+                std::string entryPointName = shaderStage[STR_FOSSILIZE_NODE_PIPELINE_STAGES_NAME].GetString();
+                uint32_t shaderModuleIndex = shaderStage[STR_FOSSILIZE_NODE_PIPELINE_STAGES_MODULE].GetUint();
+                VkShaderStageFlagBits stageFlags = static_cast<VkShaderStageFlagBits>(shaderStage[STR_FOSSILIZE_NODE_PIPELINE_STAGES_STAGE].GetUint());
+
+                // Construct the file name for the output SPIR-V file.
+                std::stringstream spirvFileName;
+                spirvFileName << baseOutputFileName << "_";
+
+                // Append the stage name.
+                switch (stageFlags)
+                {
                 case VK_SHADER_STAGE_COMPUTE_BIT:
                     spirvFileName << "comp";
                     break;
+
+                // The following are invalid for a compute pipeline.
+                case VK_SHADER_STAGE_VERTEX_BIT:
+                case VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT:
+                case VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT:
+                case VK_SHADER_STAGE_GEOMETRY_BIT:
+                case VK_SHADER_STAGE_FRAGMENT_BIT:
                 case VK_SHADER_STAGE_ALL_GRAPHICS:
                 case VK_SHADER_STAGE_ALL:
                 default:
@@ -1304,52 +1498,23 @@ bool rgFossilizeConverter::Convert(const rapidjson::Document& doc, const std::st
                 spirvFileName << "_" << entryPointName;
 
                 // Append the extension.
-                spirvFileName << ".spv";
+                spirvFileName << STR_FILE_EXTENSION_SPIRV;
 
                 // Locate the shader module in the map and serialize.
                 assert(shaderModuleIndex <= shaderModules.size());
                 if (shaderModuleIndex <= shaderModules.size())
                 {
-                    auto iter = shaderModules.find(shaderModuleIndex-1);
+                    auto iter = shaderModules.find(shaderModuleIndex - 1);
                     assert(iter != shaderModules.end());
                     if (iter != shaderModules.end())
                     {
                         // Save the binary SPIR-V data to the disk.
-                        FILE *file = fopen(spirvFileName.str().c_str(), "wb");
-                        if (file)
-                        {
-                            if (fwrite(iter->second.pCode, 1, iter->second.codeSize, file) != iter->second.codeSize)
-                            {
-                                printf(STR_ERROR_SPIRV_SERIALIZATION_FORMATTED, spirvFileName.str().c_str());
-                            }
-                            else
-                            {
-                                printf(STR_ERROR_SPIRV_SERIALIZATION_SUCCESS_FORMATTED, spirvFileName.str().c_str());
-                            }
-                            fclose(file);
-                        }
-                        else
-                        {
-                            printf(STR_ERROR_SPIRV_SERIALIZATION_WRITE_FORMATTED, spirvFileName.str().c_str());
-                        }
+                        WriteBinaryFile(spirvFileName.str(), iter->second.pCode, iter->second.codeSize);
                     }
                 }
             }
         }
-
-#ifdef _FOSSILIZE_PARSE_TEST
-        bool isGraphicsPipelineSerialized = rgPsoSerializerVulkan::WriteStructureToFile(pGraphicsPipelineRecipe, "C:\\Temp\\RGA_LAYER_OUTPUT\\myPso.pso");
-        assert(isGraphicsPipelineSerialized);
-#endif // _FOSSILIZE_PARSE_TEST
     }
-
-#ifdef _FOSSILIZE_PARSE_TEST
-    StringBuffer __buffer;
-    Writer<StringBuffer> writer(__buffer);
-    bool isAccepted = doc.Accept(writer);
-    assert(isAccepted);
-    std::cout << __buffer.GetString() << std::endl;
-#endif // _FOSSILIZE_PARSE_TEST
 
     return ret;
 }
