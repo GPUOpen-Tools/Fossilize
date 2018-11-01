@@ -224,7 +224,8 @@ static const char* STR_SPIRV_SERIALIZATION_SUCCESS_FORMATTED = "Serialized SPIR-
 
 // String constants - files.
 static const char* STR_FILE_EXTENSION_SPIRV = ".spv";
-static const char* STR_FILE_EXTENSION_PSO = ".pso";
+static const char* STR_FILE_EXTENSION_GRAPHICS_PSO = ".gpso";
+static const char* STR_FILE_EXTENSION_COMPUTE_PSO = ".cpso";
 static const char* STR_FILE_BASE_FILENAME_PSO = "rgaPso";
 
 static std::vector<uint8_t> LoadBufferFromFile(const char* path)
@@ -1283,7 +1284,7 @@ bool rgFossilizeConverter::Convert(const rapidjson::Document& doc, const std::st
 
         std::string baseOutputFileName = outputFileName.str().c_str();
         std::string psoOutputFileName = outputFileName.str().c_str();
-        psoOutputFileName.append(STR_FILE_EXTENSION_PSO);
+        psoOutputFileName.append(STR_FILE_EXTENSION_GRAPHICS_PSO);
 
         std::string errMsg;
         bool isGraphicsPipelineSerialized = rgPsoSerializerVulkan::WriteStructureToFile(pGraphicsPipelineRecipe, psoOutputFileName, errMsg);
@@ -1439,7 +1440,7 @@ bool rgFossilizeConverter::Convert(const rapidjson::Document& doc, const std::st
 
             std::string baseOutputFileName = outputFileName.str().c_str();
             std::string psoOutputFileName = outputFileName.str().c_str();
-            psoOutputFileName.append(STR_FILE_EXTENSION_PSO);
+            psoOutputFileName.append(STR_FILE_EXTENSION_COMPUTE_PSO);
 
             std::string errMsg;
             bool isComputePipelineSerialized = rgPsoSerializerVulkan::WriteStructureToFile(pComputePipelineRecipe, psoOutputFileName, errMsg);
