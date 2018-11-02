@@ -649,76 +649,91 @@ bool rgFossilizeConverter::Convert(const rapidjson::Document& doc, const std::st
                     {
                         VkSubpassDescription* pDescrtipions = new VkSubpassDescription[subpassDescriptionCount]{};
 
-                        // Add the  sub-pass description items.
+                        // Add the sub-pass description items.
                         index = 0;
                         for (const auto& description : renderPass[STR_FOSSILIZE_NODE_RENDER_PASS_SUB_PASS_DESCRIPTIONS].GetArray())
                         {
                             // Verify that the members exist.
                             assert(ret = ret && description.HasMember(STR_FOSSILIZE_NODE_FLAGS));
                             assert(ret = ret && description.HasMember(STR_FOSSILIZE_NODE_RENDER_PASS_SUB_PASS_DESCRIPTION_PIPELINE_BIND_POINT));
-                            assert(ret = ret && description.HasMember(STR_FOSSILIZE_NODE_RENDER_PASS_SUB_PASS_DESCRIPTION_COLOR_ATTACHMENTS));
-                            assert(ret = ret && description.HasMember(STR_FOSSILIZE_NODE_RENDER_PASS_SUB_PASS_DESCRIPTION_DEPTH_STENCIL_ATTACHMENTS));
 
                             // Verify the type.
                             assert(ret = ret && description[STR_FOSSILIZE_NODE_FLAGS].IsUint());
                             assert(ret = ret && description[STR_FOSSILIZE_NODE_RENDER_PASS_SUB_PASS_DESCRIPTION_PIPELINE_BIND_POINT].IsUint());
-                            assert(ret = ret && description[STR_FOSSILIZE_NODE_RENDER_PASS_SUB_PASS_DESCRIPTION_COLOR_ATTACHMENTS].IsArray());
-                            assert(ret = ret && description[STR_FOSSILIZE_NODE_RENDER_PASS_SUB_PASS_DESCRIPTION_DEPTH_STENCIL_ATTACHMENTS].IsObject());
 
                             // Fill up our structure.
                             pDescrtipions[index].flags = description[STR_FOSSILIZE_NODE_FLAGS].GetUint();
                             pDescrtipions[index].pipelineBindPoint = static_cast<VkPipelineBindPoint>(description[STR_FOSSILIZE_NODE_RENDER_PASS_SUB_PASS_DESCRIPTION_PIPELINE_BIND_POINT].GetUint());
 
-                            // Color attachments.
-                            uint32_t numColorAttachments = description[STR_FOSSILIZE_NODE_RENDER_PASS_SUB_PASS_DESCRIPTION_COLOR_ATTACHMENTS].GetArray().Size();
-
-                            if (numColorAttachments)
+                            // Color and depth stencil attachment nodes are unique in that they do not always appear in the fossilized file.
+                            // We would expect to see an empty array in that case, like in other similar cases. To solve that, we handle this scenario differently.
+                            bool isColorAttachmentsAvailable = description.HasMember(STR_FOSSILIZE_NODE_RENDER_PASS_SUB_PASS_DESCRIPTION_COLOR_ATTACHMENTS);
+                            bool isDepthStencilAttachmentsAvailable = description.HasMember(STR_FOSSILIZE_NODE_RENDER_PASS_SUB_PASS_DESCRIPTION_DEPTH_STENCIL_ATTACHMENTS);
+                            if (isColorAttachmentsAvailable)
                             {
-                                VkAttachmentReference* pColorAttachments = new VkAttachmentReference[numColorAttachments]{};
-
-                                // Add the color attachment items.
-                                uint32_t colorAttachmentIndex = 0;
-                                for (const auto& colorAttachment : description[STR_FOSSILIZE_NODE_RENDER_PASS_SUB_PASS_DESCRIPTION_COLOR_ATTACHMENTS].GetArray())
-                                {
-                                    // Verify that the members exist.
-                                    assert(ret = ret && colorAttachment.HasMember(STR_FOSSILIZE_NODE_ATTACHMENT_REFERENCE_ATTACHMENT));
-                                    assert(ret = ret && colorAttachment.HasMember(STR_FOSSILIZE_NODE_ATTACHMENT_REFERENCE_LAYOUT));
-
-                                    // Verify the type.
-                                    assert(ret = ret && colorAttachment[STR_FOSSILIZE_NODE_ATTACHMENT_REFERENCE_ATTACHMENT].IsUint());
-                                    assert(ret = ret && colorAttachment[STR_FOSSILIZE_NODE_ATTACHMENT_REFERENCE_LAYOUT].IsUint());
-
-                                    // Fill up our structure.
-                                    pColorAttachments[colorAttachmentIndex].attachment = colorAttachment[STR_FOSSILIZE_NODE_ATTACHMENT_REFERENCE_ATTACHMENT].GetUint();
-                                    pColorAttachments[colorAttachmentIndex].layout = static_cast<VkImageLayout>(colorAttachment[STR_FOSSILIZE_NODE_ATTACHMENT_REFERENCE_LAYOUT].GetUint());
-
-                                    ++colorAttachmentIndex;
-                                }
-
-                                // Add the color attachments to the sub-pass description.
-                                pDescrtipions[index].colorAttachmentCount = numColorAttachments;
-                                pDescrtipions[index].pColorAttachments = pColorAttachments;
+                                assert(ret = ret && description[STR_FOSSILIZE_NODE_RENDER_PASS_SUB_PASS_DESCRIPTION_COLOR_ATTACHMENTS].IsArray());
+                            }
+                            if (isDepthStencilAttachmentsAvailable)
+                            {
+                                assert(ret = ret && description[STR_FOSSILIZE_NODE_RENDER_PASS_SUB_PASS_DESCRIPTION_DEPTH_STENCIL_ATTACHMENTS].IsObject());
                             }
 
-                            // Depth-stencil attachment.
-                            const auto& depthStencilObj = description[STR_FOSSILIZE_NODE_RENDER_PASS_SUB_PASS_DESCRIPTION_DEPTH_STENCIL_ATTACHMENTS].GetObject();
+                            if (isColorAttachmentsAvailable)
+                            {
+                                // Color attachments.
+                                uint32_t numColorAttachments = description[STR_FOSSILIZE_NODE_RENDER_PASS_SUB_PASS_DESCRIPTION_COLOR_ATTACHMENTS].GetArray().Size();
 
-                            // Verify that the members exist.
-                            assert(ret = ret && depthStencilObj.HasMember(STR_FOSSILIZE_NODE_ATTACHMENT_REFERENCE_ATTACHMENT));
-                            assert(ret = ret && depthStencilObj.HasMember(STR_FOSSILIZE_NODE_ATTACHMENT_REFERENCE_LAYOUT));
+                                if (numColorAttachments)
+                                {
+                                    VkAttachmentReference* pColorAttachments = new VkAttachmentReference[numColorAttachments]{};
 
-                            // Verify the type.
-                            assert(ret = ret && depthStencilObj[STR_FOSSILIZE_NODE_ATTACHMENT_REFERENCE_ATTACHMENT].IsUint());
-                            assert(ret = ret && depthStencilObj[STR_FOSSILIZE_NODE_ATTACHMENT_REFERENCE_LAYOUT].IsUint());
+                                    // Add the color attachment items.
+                                    uint32_t colorAttachmentIndex = 0;
+                                    for (const auto& colorAttachment : description[STR_FOSSILIZE_NODE_RENDER_PASS_SUB_PASS_DESCRIPTION_COLOR_ATTACHMENTS].GetArray())
+                                    {
+                                        // Verify that the members exist.
+                                        assert(ret = ret && colorAttachment.HasMember(STR_FOSSILIZE_NODE_ATTACHMENT_REFERENCE_ATTACHMENT));
+                                        assert(ret = ret && colorAttachment.HasMember(STR_FOSSILIZE_NODE_ATTACHMENT_REFERENCE_LAYOUT));
 
-                            VkAttachmentReference* pDepthStencilAttachment = new VkAttachmentReference{};
+                                        // Verify the type.
+                                        assert(ret = ret && colorAttachment[STR_FOSSILIZE_NODE_ATTACHMENT_REFERENCE_ATTACHMENT].IsUint());
+                                        assert(ret = ret && colorAttachment[STR_FOSSILIZE_NODE_ATTACHMENT_REFERENCE_LAYOUT].IsUint());
 
-                            // Fill up our structure.
-                            pDepthStencilAttachment->attachment = depthStencilObj[STR_FOSSILIZE_NODE_ATTACHMENT_REFERENCE_ATTACHMENT].GetUint();
-                            pDepthStencilAttachment->layout = static_cast<VkImageLayout>(depthStencilObj[STR_FOSSILIZE_NODE_ATTACHMENT_REFERENCE_LAYOUT].GetUint());
+                                        // Fill up our structure.
+                                        pColorAttachments[colorAttachmentIndex].attachment = colorAttachment[STR_FOSSILIZE_NODE_ATTACHMENT_REFERENCE_ATTACHMENT].GetUint();
+                                        pColorAttachments[colorAttachmentIndex].layout = static_cast<VkImageLayout>(colorAttachment[STR_FOSSILIZE_NODE_ATTACHMENT_REFERENCE_LAYOUT].GetUint());
 
-                            // Add the depth stencil attachment to the current sub pass description.
-                            pDescrtipions[index].pDepthStencilAttachment = pDepthStencilAttachment;
+                                        ++colorAttachmentIndex;
+                                    }
+
+                                    // Add the color attachments to the sub-pass description.
+                                    pDescrtipions[index].colorAttachmentCount = numColorAttachments;
+                                    pDescrtipions[index].pColorAttachments = pColorAttachments;
+                                }
+                            }
+
+                            if (isDepthStencilAttachmentsAvailable)
+                            {
+                                // Depth-stencil attachment.
+                                const auto& depthStencilObj = description[STR_FOSSILIZE_NODE_RENDER_PASS_SUB_PASS_DESCRIPTION_DEPTH_STENCIL_ATTACHMENTS].GetObject();
+
+                                // Verify that the members exist.
+                                assert(ret = ret && depthStencilObj.HasMember(STR_FOSSILIZE_NODE_ATTACHMENT_REFERENCE_ATTACHMENT));
+                                assert(ret = ret && depthStencilObj.HasMember(STR_FOSSILIZE_NODE_ATTACHMENT_REFERENCE_LAYOUT));
+
+                                // Verify the type.
+                                assert(ret = ret && depthStencilObj[STR_FOSSILIZE_NODE_ATTACHMENT_REFERENCE_ATTACHMENT].IsUint());
+                                assert(ret = ret && depthStencilObj[STR_FOSSILIZE_NODE_ATTACHMENT_REFERENCE_LAYOUT].IsUint());
+
+                                VkAttachmentReference* pDepthStencilAttachment = new VkAttachmentReference{};
+
+                                // Fill up our structure.
+                                pDepthStencilAttachment->attachment = depthStencilObj[STR_FOSSILIZE_NODE_ATTACHMENT_REFERENCE_ATTACHMENT].GetUint();
+                                pDepthStencilAttachment->layout = static_cast<VkImageLayout>(depthStencilObj[STR_FOSSILIZE_NODE_ATTACHMENT_REFERENCE_LAYOUT].GetUint());
+
+                                // Add the depth stencil attachment to the current sub pass description.
+                                pDescrtipions[index].pDepthStencilAttachment = pDepthStencilAttachment;
+                            }
 
                             // Move to the next sub pass description item in our array.
                             ++index;
