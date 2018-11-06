@@ -135,33 +135,38 @@ void Device::installSegfaultHandler()
 
 bool Device::serializeToPath(const std::string &path)
 {
-	try
-	{
-		auto result = recorder.serialize(path);
-#ifdef _DEBUG
-        const char* STR_FOSSILIZE_FILE_NAME = "fossilize.json";
-        std::string fossilizeOutputFileName = path + "/" + STR_FOSSILIZE_FILE_NAME;
-		FILE *file = fopen(fossilizeOutputFileName.c_str(), "wb");
-		if (file)
-		{
-			if (fwrite(result.data(), 1, result.size(), file) != result.size())
-				LOGE("Failed to write serialized state to disk.\n");
-			fclose(file);
-			LOGI("Serialized to \"%s\".\n", path.c_str());
-			return true;
-		}
-		else
-		{
-			LOGE("Failed to open file for writing: \"%s\".\n", path.c_str());
-			return false;
-		}
-#endif // _DEBUG
-	}
-	catch (const std::exception &e)
-	{
-		LOGE("Failed to serialize: \"%s\".\n", e.what());
-		return false;
-	}
+    bool ret = false;
+    try
+    {
+        auto result = recorder.serialize(path);
+
+        // If required, save the fossilized file.
+        const std::string dumpFossilizeEnvVal = getenv("RGA_LAYER_DUMP_FOSSILIZED");
+        bool shouldDumpFossilizedFile = (!dumpFossilizeEnvVal.empty() && dumpFossilizeEnvVal.compare("1") == 0);
+        if (shouldDumpFossilizedFile)
+        {
+            const char* STR_FOSSILIZE_FILE_NAME = "fossilize.json";
+            std::string fossilizeOutputFileName = path + "/" + STR_FOSSILIZE_FILE_NAME;
+            FILE *file = fopen(fossilizeOutputFileName.c_str(), "wb");
+            if (file)
+            {
+                if (fwrite(result.data(), 1, result.size(), file) != result.size())
+                    LOGE("Failed to write serialized state to disk.\n");
+                fclose(file);
+                LOGI("Serialized to \"%s\".\n", path.c_str());
+                ret = true;
+            }
+            else
+            {
+                LOGE("Failed to open file for writing: \"%s\".\n", path.c_str());
+            }
+        }
+    }
+    catch (const std::exception &e)
+    {
+        LOGE("Failed to serialize: \"%s\".\n", e.what());
+    }
+    return ret;
 }
 
 }
