@@ -138,10 +138,16 @@ bool Device::serializeToPath(const std::string &path)
     bool ret = false;
     try
     {
-        auto result = recorder.serialize(path);
+        // Check if we need to generate a log file.
+        const char* pLogFileEnvVal = getenv("RGA_LAYER_LOG_ENABLE");
+        const std::string logEnableEnvVal = (pLogFileEnvVal != nullptr) ? pLogFileEnvVal : "";
+        bool isLogEnabled = (!logEnableEnvVal.empty() && logEnableEnvVal.compare("1") == 0);
+
+        auto result = recorder.serialize(path, isLogEnabled);
 
         // If required, save the fossilized file.
-        const std::string dumpFossilizeEnvVal = getenv("RGA_LAYER_DUMP_FOSSILIZED");
+        const char* pDumpFossilizedEnvVal = getenv("RGA_LAYER_DUMP_FOSSILIZED");
+        const std::string dumpFossilizeEnvVal = (pDumpFossilizedEnvVal != nullptr) ? pDumpFossilizedEnvVal : "";
         bool shouldDumpFossilizedFile = (!dumpFossilizeEnvVal.empty() && dumpFossilizeEnvVal.compare("1") == 0);
         if (shouldDumpFossilizedFile)
         {

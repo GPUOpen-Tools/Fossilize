@@ -2054,7 +2054,7 @@ static std::string encode_base64(const void *data_, size_t size)
 	return ret;
 }
 
-vector<uint8_t> StateRecorder::serialize(const std::string& rgaOutputPath) const
+vector<uint8_t> StateRecorder::serialize(const std::string& rgaOutputPath, bool isRgaLogEnabled) const
 {
 	uint64_t varint_spirv_offset = 0;
 
@@ -2624,7 +2624,7 @@ vector<uint8_t> StateRecorder::serialize(const std::string& rgaOutputPath) const
 
     // Save the RGA pipeline state.
     std::vector<std::string> rgaPsoFiles;
-    bool isConversionSuccessful = rgFossilizeConverter::Convert(doc, rgaOutputPath, shaderModuleCache, rgaPsoFiles);
+    bool isConversionSuccessful = rgFossilizeConverter::Convert(doc, rgaOutputPath, isRgaLogEnabled, shaderModuleCache, rgaPsoFiles);
     assert(isConversionSuccessful);
 
 	assert(uint64_t(buf - serialize_buffer.data()) == serialized_size);
