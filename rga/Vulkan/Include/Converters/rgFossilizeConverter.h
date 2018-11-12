@@ -2,6 +2,7 @@
 
 // C++.
 #include <string>
+#include <vector>
 #include <map>
 
 // Local.

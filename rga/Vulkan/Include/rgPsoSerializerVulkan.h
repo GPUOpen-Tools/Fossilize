@@ -4,7 +4,7 @@
 #include <string>
 
 // Local.
-#include "rga/Vulkan/Include/rgPipelineTypes.h""
+#include "rga/Vulkan/Include/rgPipelineTypes.h"
 
 class rgPsoSerializerVulkan
 {

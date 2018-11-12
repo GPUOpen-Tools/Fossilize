@@ -4,10 +4,10 @@
 #include <cassert>
 #include <algorithm>
 #include <sstream>
-#include <map>
 
 // C.
 #include <stdint.h>
+#include <stdio.h>
 
 // JSON.
 #include <rapidjson/document.h>
@@ -19,7 +19,7 @@
 
 // Local.
 #include "rga/Vulkan/Include/Converters/rgFossilizeConverter.h"
-#include <stdio.h>
+
 
 // Namespace.
 using namespace rapidjson;
@@ -1600,7 +1600,7 @@ bool rgFossilizeConverter::Convert(const rapidjson::Document& doc, const std::st
 
             // Serialize our pipeline recipe.
             std::stringstream outputFileName;
-            outputFileName << outputDirectory << "/" << STR_FILE_BASE_FILENAME_PSO << ++graphicsPipelineIndex;
+            outputFileName << outputDirectory << "/" << STR_FILE_BASE_FILENAME_PSO << ++computePipelineIndex;
 
             std::string baseOutputFileName = outputFileName.str().c_str();
             std::string psoOutputFileName = outputFileName.str().c_str();

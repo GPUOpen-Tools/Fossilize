@@ -21,7 +21,7 @@ file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/layer)
 
 if (WIN32)
 	add_custom_command(TARGET VK_LAYER_RGA_pipeline_extraction POST_BUILD
-		COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/VK_LAYER_RGA_pipeline_extraction_win32.json)
+		COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/VK_LAYER_RGA_pipeline_extraction_win32.json ${CMAKE_BINARY_DIR}/layer/VK_LAYER_RGA_pipeline_extraction_win32.json)
 	set_target_properties(VK_LAYER_RGA_pipeline_extraction PROPERTIES PREFIX "" LIBRARY_OUTPUT_NAME VK_LAYER_RGA_pipeline_extraction)
 	if (CMAKE_COMPILER_IS_GNUCXX)
 		if (${CMAKE_BUILD_TYPE} MATCHES "Release")
@@ -33,7 +33,7 @@ if (WIN32)
 else()
 	if (NOT ANDROID)
 		add_custom_command(TARGET VK_LAYER_RGA_pipeline_extraction POST_BUILD
-			COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/VK_LAYER_RGA_pipeline_extraction_linux.json)
+			COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/VK_LAYER_RGA_pipeline_extraction_linux.json ${CMAKE_BINARY_DIR}/layer/VK_LAYER_RGA_pipeline_extraction_linux.json)
 	endif()
 	if (${CMAKE_BUILD_TYPE} MATCHES "Release")
 		set_target_properties(VK_LAYER_RGA_pipeline_extraction PROPERTIES LINK_FLAGS "${FOSSILIZE_LINK_FLAGS} -Wl,--no-undefined -s")
