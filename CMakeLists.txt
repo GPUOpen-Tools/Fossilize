@@ -66,7 +66,7 @@ if (FOSSILIZE_CLI)
     add_subdirectory(cli)
 endif()
 
-option(FOSSILIZE_TESTS "Enable Fossilize tests." ON)
+option(FOSSILIZE_TESTS "Disable Fossilize tests." OFF)
 if (FOSSILIZE_TESTS)
 	enable_testing()
 	add_subdirectory(test)
