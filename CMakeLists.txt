@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.5)
 set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_C_STANDARD 99)
-project(Fossilize LANGUAGES CXX C)
+project(RGALayer LANGUAGES CXX C)
 
 if (CMAKE_COMPILER_IS_GNUCXX OR (${CMAKE_CXX_COMPILER_ID} MATCHES "Clang"))
 	set(FOSSILIZE_CXX_FLAGS -Wall -Wextra -Wno-missing-field-initializers -Wno-empty-body)
@@ -61,7 +61,7 @@ if (FOSSILIZE_VULKAN_LAYER)
 	add_subdirectory(layer)
 endif()
 
-option(FOSSILIZE_CLI "Enable Fossilize CLI support." ON)
+option(FOSSILIZE_CLI "Disable Fossilize CLI support." OFF)
 if (FOSSILIZE_CLI)
     add_subdirectory(cli)
 endif()
