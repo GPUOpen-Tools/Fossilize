@@ -531,7 +531,6 @@ bool rgFossilizeConverter::Convert(const rapidjson::Document& doc, const std::st
             ret = (ret && pipelineLayout[STR_FOSSILIZE_NODE_HASH].IsUint64());
             ret = (ret && pipelineLayout[STR_FOSSILIZE_NODE_FLAGS].IsUint());
             ret = (ret && pipelineLayout[STR_FOSSILIZE_NODE_PIPELINE_LAYOUT_PUSH_CONSTANT_RANGES].IsArray());
-            ret = (ret && pipelineLayout[STR_FOSSILIZE_NODE_SET_LAYOUTS].IsArray());
             assert(ret);
 
             if (ret)
@@ -571,25 +570,35 @@ bool rgFossilizeConverter::Convert(const rapidjson::Document& doc, const std::st
                     }
                 }
 
-                // Get a reference to the array of descriptor set layout indices.
-                const auto& descSetLayoutIndices = pipelineLayout[STR_FOSSILIZE_NODE_SET_LAYOUTS].GetArray();
-                uint32_t descSetLayoutIndicesCount = descSetLayoutIndices.Size();
+                ret = (ret && pipelineLayout[STR_FOSSILIZE_NODE_SET_LAYOUTS].IsArray());
+                assert(ret);
 
-                rgVkPipelineLayoutCreateInfo* pRgaPipelineCreateInfo = new rgVkPipelineLayoutCreateInfo{};
-                pRgaPipelineCreateInfo->m_pVkPipelineLayoutCreateInfo->sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-                pRgaPipelineCreateInfo->m_pVkPipelineLayoutCreateInfo->flags = pipelineLayout[STR_FOSSILIZE_NODE_FLAGS].GetUint();
-                pRgaPipelineCreateInfo->m_pVkPipelineLayoutCreateInfo->setLayoutCount = descSetLayoutIndicesCount;
-                pRgaPipelineCreateInfo->m_pVkPipelineLayoutCreateInfo->pushConstantRangeCount = pushConstantRangesCount;
-                pRgaPipelineCreateInfo->m_pVkPipelineLayoutCreateInfo->pPushConstantRanges = pRgaPushConstantRanges;
-
-                // Descriptor set layouts - add the relevant indices.
-                for (const auto& setLayout : pipelineLayout[STR_FOSSILIZE_NODE_SET_LAYOUTS].GetArray())
+                if (ret)
                 {
-                    pRgaPipelineCreateInfo->m_descriptorSetLayoutIndices.push_back(setLayout.GetUint());
-                }
+                    // Get a reference to the array of descriptor set layout indices.
+                    const auto& descSetLayoutIndices = pipelineLayout[STR_FOSSILIZE_NODE_SET_LAYOUTS].GetArray();
+                    uint32_t descSetLayoutIndicesCount = descSetLayoutIndices.Size();
 
-                // Add this instance to our collection.
-                rgaPipelineLayouts.push_back(pRgaPipelineCreateInfo);
+                    rgVkPipelineLayoutCreateInfo* pRgaPipelineCreateInfo = new rgVkPipelineLayoutCreateInfo{};
+                    pRgaPipelineCreateInfo->m_pVkPipelineLayoutCreateInfo->sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+                    pRgaPipelineCreateInfo->m_pVkPipelineLayoutCreateInfo->flags = pipelineLayout[STR_FOSSILIZE_NODE_FLAGS].GetUint();
+                    pRgaPipelineCreateInfo->m_pVkPipelineLayoutCreateInfo->setLayoutCount = descSetLayoutIndicesCount;
+                    pRgaPipelineCreateInfo->m_pVkPipelineLayoutCreateInfo->pushConstantRangeCount = pushConstantRangesCount;
+                    pRgaPipelineCreateInfo->m_pVkPipelineLayoutCreateInfo->pPushConstantRanges = pRgaPushConstantRanges;
+
+                    // Descriptor set layouts - add the relevant indices.
+                    for (const auto& setLayout : pipelineLayout[STR_FOSSILIZE_NODE_SET_LAYOUTS].GetArray())
+                    {
+                        pRgaPipelineCreateInfo->m_descriptorSetLayoutIndices.push_back(setLayout.GetUint());
+                    }
+
+                    // Add this instance to our collection.
+                    rgaPipelineLayouts.push_back(pRgaPipelineCreateInfo);
+                }
+                else
+                {
+                    converterLog << "Error: no array for descriptor set layout indices." << std::endl;
+                }
             }
         }
     }

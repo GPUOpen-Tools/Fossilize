@@ -308,7 +308,7 @@ public:
 	Hash get_hash_for_render_pass(VkRenderPass render_pass) const;
 	Hash get_hash_for_sampler(VkSampler sampler) const;
 
-	std::vector<uint8_t> serialize(const std::string& rgaOutputPath) const;
+	std::vector<uint8_t> serialize(const std::string& rgaOutputPath, bool isRgaLogEnabled) const;
 
 private:
 	ScratchAllocator allocator;
