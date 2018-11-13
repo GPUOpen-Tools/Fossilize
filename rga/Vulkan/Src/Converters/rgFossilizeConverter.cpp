@@ -862,7 +862,7 @@ bool rgFossilizeConverter::Convert(const rapidjson::Document& doc, const std::st
     ret = (ret && doc[STR_FOSSILIZE_NODE_GRAPHICS_PIPELINES].IsArray());
     assert(ret);
 
-    // Track the index of the current graphics pipeline.
+    // Track the index of the current graphics or compute pipeline.
     uint32_t graphicsPipelineIndex = 0;
 
     if (ret)
@@ -1535,9 +1535,6 @@ bool rgFossilizeConverter::Convert(const rapidjson::Document& doc, const std::st
     ret = (ret && doc.HasMember(STR_FOSSILIZE_NODE_GRAPHICS_PIPELINES));
     ret = (ret && doc[STR_FOSSILIZE_NODE_GRAPHICS_PIPELINES].IsArray());
 
-    // Track the index of the current compute pipeline.
-    uint32_t computePipelineIndex = 0;
-
     for (const auto& computePipeline : doc[STR_FOSSILIZE_NODE_COMPUTE_PIPELINES].GetArray())
     {
         // Create and reset our compute pipeline create info structure.
@@ -1600,7 +1597,7 @@ bool rgFossilizeConverter::Convert(const rapidjson::Document& doc, const std::st
 
             // Serialize our pipeline recipe.
             std::stringstream outputFileName;
-            outputFileName << outputDirectory << "/" << STR_FILE_BASE_FILENAME_PSO << ++computePipelineIndex;
+            outputFileName << outputDirectory << "/" << STR_FILE_BASE_FILENAME_PSO << ++graphicsPipelineIndex;
 
             std::string baseOutputFileName = outputFileName.str().c_str();
             std::string psoOutputFileName = outputFileName.str().c_str();
