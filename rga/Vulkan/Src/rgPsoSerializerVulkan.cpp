@@ -12,6 +12,7 @@
 // Error string definitions.
 static const char* STR_ERR_FAILED_TO_WRITE_FILE = "Error: failed to open file for writing: ";
 static const char* STR_ERR_FAILED_TO_READ_FILE = "Error: failed to open file for reading: ";
+static const char* STR_ERR_FAILED_TO_LOAD_PIPELINE_TYPE_MISMATCH = "The file's pipeline type does not match the project's pipeline type.";
 
 // Pipeline CreateInfo member name string constants.
 static const char* STR_MEMBER_VALUE_TRUE                                = "true";
@@ -1610,72 +1611,135 @@ public:
         }
     }
 
-    static void ReadStructure(rgPsoGraphicsVulkan* pCreateInfo, const nlohmann::json& file)
+    static void ReadDescriptorSetLayoutCreateInfoArray(rgPsoCreateInfoVulkan* pCreateInfo, const nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
         {
-            // Deserialize the Graphics Pipeline create info.
-            ReadGraphicsPipelineCreateInfoStructure(pCreateInfo, file[STR_MEMBER_NAME_VK_GRAPHICS_PIPELINE_CREATE_INFO]);
-
-            // Deserialize the Render Pass create info.
-            VkRenderPassCreateInfo* pRenderPassCreateInfo = pCreateInfo->GetRenderPassCreateInfo();
-            assert(pRenderPassCreateInfo != nullptr);
-            if (pRenderPassCreateInfo != nullptr)
+            // Look for a Descriptor Set Layout create info node. If this node exists, process it as an
+            // array of items, because a PSO file can have multiple create info structures saved.
+            if (IsCreateInfoExists(file, STR_MEMBER_NAME_VK_DESCRIPTOR_SET_LAYOUT_CREATE_INFO))
             {
-                ReadStructure(pRenderPassCreateInfo, file[STR_MEMBER_NAME_VK_RENDER_PASS_CREATE_INFO]);
-            }
+                // The Pipeline Layout utilizes Descriptor Set Layout create info array.
+                // Find the JSON root element, step through each child element, and read the data into memory.
+                const nlohmann::json& descriptorSetLayoutsRoot = file[STR_MEMBER_NAME_VK_DESCRIPTOR_SET_LAYOUT_CREATE_INFO];
+                auto firstItem = descriptorSetLayoutsRoot.begin();
+                auto lastItem = descriptorSetLayoutsRoot.end();
 
-            // Deserialize the Pipeline Layout create info.
-            VkPipelineLayoutCreateInfo* pPipelineLayoutCreateInfo = pCreateInfo->GetPipelineLayoutCreateInfo();
-            assert(pPipelineLayoutCreateInfo != nullptr);
-            if (pPipelineLayoutCreateInfo != nullptr)
-            {
-                ReadStructure(pPipelineLayoutCreateInfo, file[STR_MEMBER_NAME_VK_PIPELINE_LAYOUT_CREATE_INFO]);
-            }
+                // Clear the existing default Descriptor Set Layout create info structures and load
+                // from scratch using data loaded from the PSO file.
+                std::vector<VkDescriptorSetLayoutCreateInfo*> descriptorSetLayoutCollection = pCreateInfo->GetDescriptorSetLayoutCreateInfo();
+                descriptorSetLayoutCollection.clear();
 
-            // Deserialize the Descriptor Set Layout create info structures.
+                // Read each individual element in the array of create info.
+                for (auto itemIter = firstItem; itemIter != lastItem; ++itemIter)
+                {
+                    VkDescriptorSetLayoutCreateInfo* pNewDescriptorSetLayout = new VkDescriptorSetLayoutCreateInfo{};
+                    assert(pNewDescriptorSetLayout != nullptr);
+                    if (pNewDescriptorSetLayout != nullptr)
+                    {
+                        ReadStructure(pNewDescriptorSetLayout, *itemIter);
+                        pCreateInfo->AddDescriptorSetLayoutCreateInfo(pNewDescriptorSetLayout);
+                    }
+                }
+            }
+        }
+    }
+
+    static void WriteDescriptorSetLayoutCreateInfoArray(rgPsoCreateInfoVulkan* pCreateInfo, nlohmann::json& file)
+    {
+        assert(pCreateInfo != nullptr);
+        if (pCreateInfo != nullptr)
+        {
+            int index = 0;
             std::vector<VkDescriptorSetLayoutCreateInfo*> descriptorSetLayoutCollection = pCreateInfo->GetDescriptorSetLayoutCreateInfo();
             for (VkDescriptorSetLayoutCreateInfo* pDescriptorSetLayoutCreateInfo : descriptorSetLayoutCollection)
             {
                 assert(pDescriptorSetLayoutCreateInfo != nullptr);
                 if (pDescriptorSetLayoutCreateInfo != nullptr)
                 {
-                    ReadStructure(pDescriptorSetLayoutCreateInfo, file[STR_MEMBER_NAME_VK_DESCRIPTOR_SET_LAYOUT_CREATE_INFO]);
+                    WriteStructure(pDescriptorSetLayoutCreateInfo, file[STR_MEMBER_NAME_VK_DESCRIPTOR_SET_LAYOUT_CREATE_INFO][index]);
+                    index++;
                 }
             }
         }
     }
 
-    static void ReadStructure(rgPsoComputeVulkan* pCreateInfo, const nlohmann::json& file)
+    static bool ReadStructure(rgPsoGraphicsVulkan* pCreateInfo, const nlohmann::json& file)
     {
+        bool isLoaded = false;
+
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
         {
-            VkComputePipelineCreateInfo* pComputePipelineCreateInfo = pCreateInfo->GetComputePipelineCreateInfo();
-            assert(pComputePipelineCreateInfo != nullptr);
-            if (pComputePipelineCreateInfo != nullptr)
+            // Does the given file's root element match what we expect to see for the project's pipeline type?
+            bool isMatchingRootElement = IsCreateInfoExists(file, STR_MEMBER_NAME_VK_GRAPHICS_PIPELINE_CREATE_INFO);
+            if (isMatchingRootElement)
             {
-                ReadStructure(pComputePipelineCreateInfo, file[STR_MEMBER_NAME_VK_COMPUTE_PIPELINE_CREATE_INFO]);
-            }
+                // Deserialize the Graphics Pipeline create info.
+                ReadGraphicsPipelineCreateInfoStructure(pCreateInfo, file[STR_MEMBER_NAME_VK_GRAPHICS_PIPELINE_CREATE_INFO]);
 
-            VkPipelineLayoutCreateInfo* pPipelineLayoutCreateInfo = pCreateInfo->GetPipelineLayoutCreateInfo();
-            assert(pPipelineLayoutCreateInfo != nullptr);
-            if (pPipelineLayoutCreateInfo != nullptr)
-            {
-                ReadStructure(pPipelineLayoutCreateInfo, file[STR_MEMBER_NAME_VK_PIPELINE_LAYOUT_CREATE_INFO]);
-            }
-
-            std::vector< VkDescriptorSetLayoutCreateInfo*> descriptorSetLayouts = pCreateInfo->GetDescriptorSetLayoutCreateInfo();
-            for (VkDescriptorSetLayoutCreateInfo* pDescriptorSetLayoutCreateInfo : descriptorSetLayouts)
-            {
-                assert(pDescriptorSetLayoutCreateInfo != nullptr);
-                if (pDescriptorSetLayoutCreateInfo != nullptr)
+                // Deserialize the Render Pass create info.
+                VkRenderPassCreateInfo* pRenderPassCreateInfo = pCreateInfo->GetRenderPassCreateInfo();
+                assert(pRenderPassCreateInfo != nullptr);
+                if (pRenderPassCreateInfo != nullptr)
                 {
-                    ReadStructure(pDescriptorSetLayoutCreateInfo, file[STR_MEMBER_NAME_VK_DESCRIPTOR_SET_LAYOUT_CREATE_INFO]);
+                    ReadStructure(pRenderPassCreateInfo, file[STR_MEMBER_NAME_VK_RENDER_PASS_CREATE_INFO]);
                 }
+
+                // Deserialize the Pipeline Layout create info.
+                VkPipelineLayoutCreateInfo* pPipelineLayoutCreateInfo = pCreateInfo->GetPipelineLayoutCreateInfo();
+                assert(pPipelineLayoutCreateInfo != nullptr);
+                if (pPipelineLayoutCreateInfo != nullptr)
+                {
+                    ReadStructure(pPipelineLayoutCreateInfo, file[STR_MEMBER_NAME_VK_PIPELINE_LAYOUT_CREATE_INFO]);
+                }
+
+                // Read all Descriptor Set Layout create info structures.
+                ReadDescriptorSetLayoutCreateInfoArray(pCreateInfo, file);
+
+                // If all data was deserialized successfully, the PSO file is loaded.
+                isLoaded = true;
             }
         }
+
+        return isLoaded;
+    }
+
+    static bool ReadStructure(rgPsoComputeVulkan* pCreateInfo, const nlohmann::json& file)
+    {
+        bool isLoaded = false;
+
+        assert(pCreateInfo != nullptr);
+        if (pCreateInfo != nullptr)
+        {
+            // Does the given file's root element match what we expect to see for the project's pipeline type?
+            bool isMatchingRootElement = IsCreateInfoExists(file, STR_MEMBER_NAME_VK_COMPUTE_PIPELINE_CREATE_INFO);
+            if (isMatchingRootElement)
+            {
+                VkComputePipelineCreateInfo* pComputePipelineCreateInfo = pCreateInfo->GetComputePipelineCreateInfo();
+                assert(pComputePipelineCreateInfo != nullptr);
+                if (pComputePipelineCreateInfo != nullptr)
+                {
+                    ReadStructure(pComputePipelineCreateInfo, file[STR_MEMBER_NAME_VK_COMPUTE_PIPELINE_CREATE_INFO]);
+                }
+
+                VkPipelineLayoutCreateInfo* pPipelineLayoutCreateInfo = pCreateInfo->GetPipelineLayoutCreateInfo();
+                assert(pPipelineLayoutCreateInfo != nullptr);
+                if (pPipelineLayoutCreateInfo != nullptr)
+                {
+                    ReadStructure(pPipelineLayoutCreateInfo, file[STR_MEMBER_NAME_VK_PIPELINE_LAYOUT_CREATE_INFO]);
+                }
+
+                // Read all Descriptor Set Layout create info structures.
+                ReadDescriptorSetLayoutCreateInfoArray(pCreateInfo, file);
+
+                // If all data was deserialized successfully, the PSO file is loaded.
+                isLoaded = true;
+            }
+        }
+
+        return isLoaded;
     }
 
     static void WriteStructure(rgPsoGraphicsVulkan* pCreateInfo, nlohmann::json& file)
@@ -1704,15 +1768,8 @@ public:
                 WriteStructure(pPipelineLayoutCreateInfo, file[STR_MEMBER_NAME_VK_PIPELINE_LAYOUT_CREATE_INFO]);
             }
 
-            std::vector< VkDescriptorSetLayoutCreateInfo*> descriptorSetLayoutCollection = pCreateInfo->GetDescriptorSetLayoutCreateInfo();
-            for (VkDescriptorSetLayoutCreateInfo* pDescriptorSetLayoutCreateInfo : descriptorSetLayoutCollection)
-            {
-                assert(pDescriptorSetLayoutCreateInfo != nullptr);
-                if (pDescriptorSetLayoutCreateInfo != nullptr)
-                {
-                    WriteStructure(pDescriptorSetLayoutCreateInfo, file[STR_MEMBER_NAME_VK_DESCRIPTOR_SET_LAYOUT_CREATE_INFO]);
-                }
-            }
+            // Write the array of Descriptor Set Layout create info structures.
+            WriteDescriptorSetLayoutCreateInfoArray(pCreateInfo, file);
         }
     }
 
@@ -1735,15 +1792,8 @@ public:
                 WriteStructure(pPipelineLayoutCreateInfo, file[STR_MEMBER_NAME_VK_PIPELINE_LAYOUT_CREATE_INFO]);
             }
 
-            std::vector< VkDescriptorSetLayoutCreateInfo*> descriptorSetLayoutCollection = pCreateInfo->GetDescriptorSetLayoutCreateInfo();
-            for (VkDescriptorSetLayoutCreateInfo* pDescriptorSetLayoutCreateInfo : descriptorSetLayoutCollection)
-            {
-                assert(pDescriptorSetLayoutCreateInfo != nullptr);
-                if (pDescriptorSetLayoutCreateInfo != nullptr)
-                {
-                    WriteStructure(pDescriptorSetLayoutCreateInfo, file[STR_MEMBER_NAME_VK_DESCRIPTOR_SET_LAYOUT_CREATE_INFO]);
-                }
-            }
+            // Write the array of Descriptor Set Layout create info structures.
+            WriteDescriptorSetLayoutCreateInfoArray(pCreateInfo, file);
         }
     }
 
@@ -1778,12 +1828,17 @@ bool rgPsoSerializerVulkan::ReadStructureFromFile(const std::string& filePath, r
             fileStream.close();
 
             // Read the structure data from the JSON file.
-            rgPsoSerializerVulkanImpl::ReadStructure(pCreateInfo, structure);
+            if (rgPsoSerializerVulkanImpl::ReadStructure(pCreateInfo, structure))
+            {
+                // Assign the deserialized pipeline state file to the output pointer.
+                *ppCreateInfo = pCreateInfo;
 
-            // Assign the deserialized pipeline state file to the output pointer.
-            *ppCreateInfo = pCreateInfo;
-
-            ret = true;
+                ret = true;
+            }
+            else
+            {
+                errorString = STR_ERR_FAILED_TO_LOAD_PIPELINE_TYPE_MISMATCH;
+            }
         }
         else
         {
@@ -1823,12 +1878,16 @@ bool rgPsoSerializerVulkan::ReadStructureFromFile(const std::string& filePath, r
             fileStream.close();
 
             // Read the structure data from the JSON file.
-            rgPsoSerializerVulkanImpl::ReadStructure(pCreateInfo, structure);
-
-            // Assign the deserialized pipeline state file to the output pointer.
-            *ppCreateInfo = pCreateInfo;
-
-            ret = true;
+            if (rgPsoSerializerVulkanImpl::ReadStructure(pCreateInfo, structure))
+            {
+                // Assign the deserialized pipeline state file to the output pointer.
+                *ppCreateInfo = pCreateInfo;
+                ret = true;
+            }
+            else
+            {
+                errorString = STR_ERR_FAILED_TO_LOAD_PIPELINE_TYPE_MISMATCH;
+            }
         }
         else
         {
