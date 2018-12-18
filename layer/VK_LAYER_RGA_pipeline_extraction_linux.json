@@ -1,9 +1,9 @@
 {
     "file_format_version" : "1.0.0",
     "layer" : {
-        "name": "VK_LAYER_RGA_pipeline_extraction",
+        "name": "libVK_LAYER_RGA_pipeline_extraction",
         "type": "GLOBAL",
-        "library_path": "./VK_LAYER_RGA_pipeline_extraction.so",
+        "library_path": "./libVK_LAYER_RGA_pipeline_extraction.so",
         "api_version": "1.0.70",
         "implementation_version": "1",
         "description": "RGA pipeline extraction layer.",
