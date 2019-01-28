@@ -26,6 +26,7 @@
 #include <stdint.h>
 #include <vector>
 #include <memory>
+#include <map>
 #include <unordered_map>
 
 #define RAPIDJSON_HAS_STDSTRING 1
@@ -310,6 +311,18 @@ public:
 
 	std::vector<uint8_t> serialize(const std::string& rgaOutputPath, bool isRgaLogEnabled) const;
 
+    // Get the name of the pipeline whose hash is given.
+    bool get_pipeline_name(Fossilize::Hash pipelineHash, std::string& name) const;
+
+    // Set the name of the pipeline whose hash is given.
+    void set_pipeline_name(Fossilize::Hash pipelineHash, const std::string& name);
+
+    // Get the hash of the pipeline represented by the given VkPipeline handle.
+    bool get_pipeline_hash(VkPipeline pipeline, Fossilize::Hash&) const;
+
+    // Set the hash of the pipeline represented by the given VkPipeline handle.
+    void set_pipeline_hash(VkPipeline pipeline, Fossilize::Hash pipelineHash);
+
 private:
 	ScratchAllocator allocator;
 
@@ -328,6 +341,17 @@ private:
 	std::unordered_map<VkPipeline, unsigned> compute_pipeline_to_index;
 	std::unordered_map<VkRenderPass, unsigned> render_pass_to_index;
 	std::unordered_map<VkSampler, unsigned> sampler_to_index;
+
+    // Pipeline name mapping: hash to name.
+    std::map<Fossilize::Hash, std::string> m_pipelineNameMapping;
+
+    // Pipeline name mapping: handle to hash. When hash is
+    // being generated for the handle, we store that info.
+    // Once the object that the handle represents is being
+    // named by the user, we map between the hash and the
+    // name. From that point and on, we only refer to the
+    // hash as the key, not to the handle.
+    std::map<VkPipeline, Fossilize::Hash> m_pipelineToHash;
 
 	VkDescriptorSetLayoutCreateInfo copy_descriptor_set_layout(const VkDescriptorSetLayoutCreateInfo &create_info);
 	VkPipelineLayoutCreateInfo copy_pipeline_layout(const VkPipelineLayoutCreateInfo &create_info);

@@ -1670,22 +1670,22 @@ unsigned StateRecorder::register_shader_module(Hash hash, const VkShaderModuleCr
 	return index;
 }
 
-Hash StateRecorder::get_hash_for_compute_pipeline_handle(VkPipeline pipeline) const
+Fossilize::Hash StateRecorder::get_hash_for_compute_pipeline_handle(VkPipeline pipeline) const
 {
-	auto itr = compute_pipeline_to_index.find(pipeline);
-	if (itr == end(compute_pipeline_to_index))
-		FOSSILIZE_THROW("Handle is not registered.");
-	else
-		return compute_pipelines[itr->second].hash;
+    auto itr = compute_pipeline_to_index.find(pipeline);
+    if (itr == end(compute_pipeline_to_index))
+        FOSSILIZE_THROW("Handle is not registered.");
+    else
+        return compute_pipelines[itr->second].hash;
 }
 
-Hash StateRecorder::get_hash_for_graphics_pipeline_handle(VkPipeline pipeline) const
+Fossilize::Hash StateRecorder::get_hash_for_graphics_pipeline_handle(VkPipeline pipeline) const
 {
-	auto itr = graphics_pipeline_to_index.find(pipeline);
-	if (itr == end(graphics_pipeline_to_index))
-		FOSSILIZE_THROW("Handle is not registered.");
-	else
-		return graphics_pipelines[itr->second].hash;
+    auto itr = graphics_pipeline_to_index.find(pipeline);
+    if (itr == end(graphics_pipeline_to_index))
+        FOSSILIZE_THROW("Handle is not registered.");
+    else
+        return graphics_pipelines[itr->second].hash;
 }
 
 Hash StateRecorder::get_hash_for_sampler(VkSampler sampler) const
@@ -2624,11 +2624,46 @@ vector<uint8_t> StateRecorder::serialize(const std::string& rgaOutputPath, bool 
 
     // Save the RGA pipeline state.
     std::vector<std::string> rgaPsoFiles;
-    bool isConversionSuccessful = rgFossilizeConverter::Convert(doc, rgaOutputPath, isRgaLogEnabled, shaderModuleCache, rgaPsoFiles);
+    bool isConversionSuccessful = rgFossilizeConverter::Convert(doc, rgaOutputPath, isRgaLogEnabled,
+        shaderModuleCache, rgaPsoFiles, m_pipelineNameMapping);
     assert(isConversionSuccessful);
 
 	assert(uint64_t(buf - serialize_buffer.data()) == serialized_size);
 	return serialize_buffer;
+}
+
+bool StateRecorder::get_pipeline_name(Fossilize::Hash pipelineHash, std::string& name) const
+{
+    bool isFound = false;
+    auto iter = m_pipelineNameMapping.find(pipelineHash);
+    if (iter != m_pipelineNameMapping.end())
+    {
+        name = iter->second;
+        isFound = true;
+    }
+    return isFound;
+}
+
+void StateRecorder::set_pipeline_name(Fossilize::Hash pipelineHash, const std::string& name)
+{
+    m_pipelineNameMapping[pipelineHash] = name;
+}
+
+bool StateRecorder::get_pipeline_hash(VkPipeline pipeline, Fossilize::Hash& pipelineHash) const
+{
+    bool isFound = false;
+    auto iter = m_pipelineToHash.find(pipeline);
+    if (iter != m_pipelineToHash.end())
+    {
+        pipelineHash = iter->second;
+        isFound = true;
+    }
+    return isFound;
+}
+
+void StateRecorder::set_pipeline_hash(VkPipeline pipeline, Fossilize::Hash pipelineHash)
+{
+    m_pipelineToHash[pipeline] = pipelineHash;
 }
 
 }

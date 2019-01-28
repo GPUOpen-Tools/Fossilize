@@ -231,6 +231,18 @@ static const char* STR_FILE_EXTENSION_GRAPHICS_PSO = ".gpso";
 static const char* STR_FILE_EXTENSION_COMPUTE_PSO = ".cpso";
 static const char* STR_FILE_BASE_FILENAME_PSO = "rgaPso";
 
+// Split string str according to delimiter delim and store the results in dst.
+static void splitString(const std::string& str, char delim, std::vector<std::string>& dst)
+{
+    std::stringstream ss;
+    ss.str(str);
+    std::string substr;
+    while (std::getline(ss, substr, delim))
+    {
+        dst.push_back(substr);
+    }
+}
+
 static std::vector<uint8_t> LoadBufferFromFile(const char* path)
 {
     FILE *pFile = fopen(path, "rb");
@@ -298,7 +310,6 @@ static bool WriteTextFile(const std::string& outputFileName, const std::string& 
     }
     return ret;
 }
-
 
 // Convert a Fossilize sampler node to a VkSamplerCreateInfo.
 static bool ToVkSamplerCreateInfo(const rapidjson::Value& sampler, VkSamplerCreateInfo& createInfo)
@@ -388,7 +399,7 @@ static bool ToVkSamplerCreateInfo(const rapidjson::Value& sampler, VkSamplerCrea
 }
 
 bool rgFossilizeConverter::Convert(const rapidjson::Document& doc, const std::string& outputDirectory, bool isLogEnabled,
-    const std::map<uint32_t, VkShaderModuleCreateInfo>& shaderModules, std::vector<std::string>& rgaPsoFiles)
+    const std::map<uint32_t, VkShaderModuleCreateInfo>& shaderModules, std::vector<std::string>& rgaPsoFiles, const std::map<uint64_t, std::string>& pipelineNames)
 {
     bool ret = false;
 
@@ -856,6 +867,16 @@ bool rgFossilizeConverter::Convert(const rapidjson::Document& doc, const std::st
         }
     }
 
+    // Check if the user requested conditional mode.
+    const char* pPipelineNameEnvVal = getenv("RGA_LAYER_SPECIFIC_PIPELINE");
+    const std::string pipelineNamesEnvVal = (pPipelineNameEnvVal != nullptr) ? pPipelineNameEnvVal : "";
+    bool shouldSerializeAllPipelines = pipelineNamesEnvVal.empty();
+    std::vector<std::string> requiredPipelineNames;
+    if (!shouldSerializeAllPipelines)
+    {
+        splitString(pipelineNamesEnvVal, ';', requiredPipelineNames);
+    }
+
     // Graphics pipelines.
     std::vector<rgPsoGraphicsVulkan*> rgaGraphicsPipelineRecipes;
     ret = (ret && doc.HasMember(STR_FOSSILIZE_NODE_GRAPHICS_PIPELINES));
@@ -910,549 +931,570 @@ bool rgFossilizeConverter::Convert(const rapidjson::Document& doc, const std::st
             ret = (ret && graphicsPipeline[STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_STAGES].IsArray());
             assert(ret);
 
-            // Fill up our structure.
-            VkGraphicsPipelineCreateInfo* pGraphicsPiplineCreateInfo = pGraphicsPipelineRecipe->GetGraphicsPipelineCreateInfo();
-            assert(pGraphicsPiplineCreateInfo != nullptr);
-            if (pGraphicsPiplineCreateInfo != nullptr)
+            std::string pipelineName;
+            bool shouldSerializeCurrPipeline = true;
+            if (!shouldSerializeAllPipelines)
             {
-                pGraphicsPiplineCreateInfo->flags = static_cast<VkFlags>(graphicsPipeline[STR_FOSSILIZE_NODE_FLAGS].GetUint());
+                // Check if the current pipeline was requested by the user.
+                shouldSerializeCurrPipeline = false;
 
-                // @TODO: figure out what should we do with this one. Is this a handle or an internal reference within the JSON.
-                pGraphicsPiplineCreateInfo->sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-                pGraphicsPiplineCreateInfo->basePipelineHandle = reinterpret_cast<VkPipeline>(graphicsPipeline[STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_BASE_PIPELINE_HANDLE].GetInt64());
-                pGraphicsPiplineCreateInfo->basePipelineIndex = static_cast<VkFlags>(graphicsPipeline[STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_BASE_PIPELINE_INDEX].GetInt());
-                pGraphicsPiplineCreateInfo->subpass = graphicsPipeline[STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_SUB_PASS].GetUint();
-
-                // Pipeline layouts and descriptor set layouts.
-                // Get the pipeline layout index within our collection.
-                uint32_t pipelineLayoutIndex = graphicsPipeline[STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_LAYOUT].GetUint();
-                assert(pipelineLayoutIndex <= rgaPipelineLayouts.size());
-                if (pipelineLayoutIndex <= rgaPipelineLayouts.size())
+                // Get the name of the current pipeline.
+                uint64_t pipelineHash = graphicsPipeline[STR_FOSSILIZE_NODE_HASH].GetUint64();
+                auto iter = pipelineNames.find(pipelineHash);
+                if (iter != pipelineNames.end( ))
                 {
-                    assert(rgaPipelineLayouts[pipelineLayoutIndex - 1] != nullptr);
-                    if (rgaPipelineLayouts[pipelineLayoutIndex - 1] != nullptr)
-                    {
-                        VkPipelineLayoutCreateInfo* pPipelineLayoutCreateInfo = rgaPipelineLayouts[pipelineLayoutIndex - 1]->m_pVkPipelineLayoutCreateInfo;
-                        assert(pPipelineLayoutCreateInfo != nullptr);
-                        pGraphicsPipelineRecipe->SetPipelineLayoutCreateInfo(pPipelineLayoutCreateInfo);
+                    pipelineName = iter->second;
+                    assert(!pipelineName.empty());
 
-                        // Add the descriptor set layout create info structures.
-                        for (size_t descriptorSetLayoutIndex : rgaPipelineLayouts[pipelineLayoutIndex - 1]->m_descriptorSetLayoutIndices)
+                    // Serialize if the current pipeline was requested by the user.
+                    if (!pipelineName.empty() && std::find(requiredPipelineNames.begin(),
+                        requiredPipelineNames.end(), pipelineName) != requiredPipelineNames.end())
+                    {
+                        shouldSerializeCurrPipeline = true;
+                    }
+                }
+            }
+
+            if (shouldSerializeCurrPipeline)
+            {
+                // Fill up our structure.
+                VkGraphicsPipelineCreateInfo* pGraphicsPiplineCreateInfo = pGraphicsPipelineRecipe->GetGraphicsPipelineCreateInfo();
+                assert(pGraphicsPiplineCreateInfo != nullptr);
+                if (pGraphicsPiplineCreateInfo != nullptr)
+                {
+                    pGraphicsPiplineCreateInfo->flags = static_cast<VkFlags>(graphicsPipeline[STR_FOSSILIZE_NODE_FLAGS].GetUint());
+                    pGraphicsPiplineCreateInfo->sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+                    pGraphicsPiplineCreateInfo->basePipelineHandle = reinterpret_cast<VkPipeline>(graphicsPipeline[STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_BASE_PIPELINE_HANDLE].GetInt64());
+                    pGraphicsPiplineCreateInfo->basePipelineIndex = static_cast<VkFlags>(graphicsPipeline[STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_BASE_PIPELINE_INDEX].GetInt());
+                    pGraphicsPiplineCreateInfo->subpass = graphicsPipeline[STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_SUB_PASS].GetUint();
+
+                    // Pipeline layouts and descriptor set layouts.
+                    // Get the pipeline layout index within our collection.
+                    uint32_t pipelineLayoutIndex = graphicsPipeline[STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_LAYOUT].GetUint();
+                    assert(pipelineLayoutIndex <= rgaPipelineLayouts.size());
+                    if (pipelineLayoutIndex <= rgaPipelineLayouts.size())
+                    {
+                        assert(rgaPipelineLayouts[pipelineLayoutIndex - 1] != nullptr);
+                        if (rgaPipelineLayouts[pipelineLayoutIndex - 1] != nullptr)
                         {
-                            assert(descriptorSetLayoutIndex <= rgaDescriptorSetLayouts.size());
-                            if (descriptorSetLayoutIndex <= rgaDescriptorSetLayouts.size())
+                            VkPipelineLayoutCreateInfo* pPipelineLayoutCreateInfo = rgaPipelineLayouts[pipelineLayoutIndex - 1]->m_pVkPipelineLayoutCreateInfo;
+                            assert(pPipelineLayoutCreateInfo != nullptr);
+                            pGraphicsPipelineRecipe->SetPipelineLayoutCreateInfo(pPipelineLayoutCreateInfo);
+
+                            // Add the descriptor set layout create info structures.
+                            for (size_t descriptorSetLayoutIndex : rgaPipelineLayouts[pipelineLayoutIndex - 1]->m_descriptorSetLayoutIndices)
                             {
-                                pGraphicsPipelineRecipe->AddDescriptorSetLayoutCreateInfo(rgaDescriptorSetLayouts[descriptorSetLayoutIndex - 1]);
+                                assert(descriptorSetLayoutIndex <= rgaDescriptorSetLayouts.size());
+                                if (descriptorSetLayoutIndex <= rgaDescriptorSetLayouts.size())
+                                {
+                                    pGraphicsPipelineRecipe->AddDescriptorSetLayoutCreateInfo(rgaDescriptorSetLayouts[descriptorSetLayoutIndex - 1]);
+                                }
                             }
                         }
                     }
-                }
 
-                // Retrieve the render pass index.
-                uint32_t renderPassIndex = graphicsPipeline[STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_RENDER_PASS].GetUint();
+                    // Retrieve the render pass index.
+                    uint32_t renderPassIndex = graphicsPipeline[STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_RENDER_PASS].GetUint();
 
-                // Verify that we are not going out of bounds.
-                assert(renderPassIndex <= rgaRenderPasses.size());
+                    // Verify that we are not going out of bounds.
+                    assert(renderPassIndex <= rgaRenderPasses.size());
 
-                if (renderPassIndex <= rgaRenderPasses.size())
-                {
-                    // The index in our vector would always be -1.
-                    VkRenderPassCreateInfo* pRenderPass = rgaRenderPasses[renderPassIndex - 1];
-                    assert(pRenderPass != nullptr);
-                    pGraphicsPipelineRecipe->SetRenderPassCreateInfo(pRenderPass);
-                }
-
-                // Dynamic state.
-                const auto& dynamicStateObj = graphicsPipeline[STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_DYNAMIC_STATE].GetObject();
-
-                // Verify that the members exist.
-                ret = (ret && dynamicStateObj.HasMember(STR_FOSSILIZE_NODE_FLAGS));
-                ret = (ret && dynamicStateObj.HasMember(STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_DYNAMIC_STATE));
-                assert(ret);
-
-                // Verify the type.
-                ret = (ret && dynamicStateObj[STR_FOSSILIZE_NODE_FLAGS].IsUint());
-                ret = (ret && dynamicStateObj[STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_DYNAMIC_STATE].IsArray());
-                assert(ret);
-
-                if (ret)
-                {
-                    uint32_t dynamicStateCount = dynamicStateObj[STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_DYNAMIC_STATE].GetArray().Size();
-                    if (dynamicStateCount > 0)
+                    if (renderPassIndex <= rgaRenderPasses.size())
                     {
-                        // Allocate our dynamic state create info.
-                        VkPipelineDynamicStateCreateInfo* pDynamicStateCreateInfo = new VkPipelineDynamicStateCreateInfo{};
-                        pDynamicStateCreateInfo->sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-                        pDynamicStateCreateInfo->flags = static_cast<VkPipelineDynamicStateCreateFlags>(dynamicStateObj[STR_FOSSILIZE_NODE_FLAGS].GetUint());
-                        pDynamicStateCreateInfo->dynamicStateCount = dynamicStateCount;
-
-                        // Create an array of dynamic states.
-                        VkDynamicState* pDynamicStates = new VkDynamicState[dynamicStateCount]{};
-
-                        // The index within our array.
-                        size_t dynamicStateIndex = 0;
-
-                        for (const auto& dynamicState : dynamicStateObj[STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_DYNAMIC_STATE].GetArray())
-                        {
-                            VkDynamicState diValue = static_cast<VkDynamicState>(dynamicState.GetUint());
-                            pDynamicStates[dynamicStateIndex++] = diValue;
-                        }
-
-                        // Add the dynamic states array to our create info object.
-                        pDynamicStateCreateInfo->pDynamicStates = pDynamicStates;
-
-                        // Add the dynamic state create info to the graphics pipeline create info.
-                        pGraphicsPiplineCreateInfo->pDynamicState = pDynamicStateCreateInfo;
+                        // The index in our vector would always be -1.
+                        VkRenderPassCreateInfo* pRenderPass = rgaRenderPasses[renderPassIndex - 1];
+                        assert(pRenderPass != nullptr);
+                        pGraphicsPipelineRecipe->SetRenderPassCreateInfo(pRenderPass);
                     }
-                }
 
-                // Multisample state.
-                const auto& multiSampleStateObj = graphicsPipeline[STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_MULTISAMPLE_STATE].GetObject();
-                VkPipelineMultisampleStateCreateInfo* pMultiSampleStateCreateInfo = new VkPipelineMultisampleStateCreateInfo{};
-                pMultiSampleStateCreateInfo->sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+                    // Dynamic state.
+                    const auto& dynamicStateObj = graphicsPipeline[STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_DYNAMIC_STATE].GetObject();
 
-                // Verify that the members exist.
-                ret = (ret && multiSampleStateObj.HasMember(STR_FOSSILIZE_NODE_FLAGS));
-                ret = (ret && multiSampleStateObj.HasMember(STR_FOSSILIZE_NODE_MULTI_SAMPLE_STATE_RASTERIZATION_SAMPLES));
-                ret = (ret && multiSampleStateObj.HasMember(STR_FOSSILIZE_NODE_MULTI_SAMPLE_SAMPLE_SHADING_ENABLE));
-                ret = (ret && multiSampleStateObj.HasMember(STR_FOSSILIZE_NODE_MULTI_SAMPLE_MIN_SAMPLE_SHADING));
-                ret = (ret && multiSampleStateObj.HasMember(STR_FOSSILIZE_NODE_MULTI_ALPHA_TO_ONE_ENABLE));
-                ret = (ret && multiSampleStateObj.HasMember(STR_FOSSILIZE_NODE_MULTI_ALPHA_TO_COVERAGE_ENABLE));
-                assert(ret);
-
-                // Verify the type.
-                ret = (ret && multiSampleStateObj[STR_FOSSILIZE_NODE_FLAGS].IsUint());
-                ret = (ret && multiSampleStateObj[STR_FOSSILIZE_NODE_MULTI_SAMPLE_STATE_RASTERIZATION_SAMPLES].IsInt64());
-                ret = (ret && multiSampleStateObj[STR_FOSSILIZE_NODE_MULTI_SAMPLE_SAMPLE_SHADING_ENABLE].IsUint());
-                ret = (ret && multiSampleStateObj[STR_FOSSILIZE_NODE_MULTI_SAMPLE_MIN_SAMPLE_SHADING].IsFloat());
-                ret = (ret && multiSampleStateObj[STR_FOSSILIZE_NODE_MULTI_ALPHA_TO_ONE_ENABLE].IsUint());
-                ret = (ret && multiSampleStateObj[STR_FOSSILIZE_NODE_MULTI_ALPHA_TO_COVERAGE_ENABLE].IsUint());
-                assert(ret);
-
-                // Fill up our structure.
-                pMultiSampleStateCreateInfo->flags = multiSampleStateObj[STR_FOSSILIZE_NODE_FLAGS].GetUint();
-                pMultiSampleStateCreateInfo->rasterizationSamples = static_cast<VkSampleCountFlagBits>(multiSampleStateObj[STR_FOSSILIZE_NODE_MULTI_SAMPLE_STATE_RASTERIZATION_SAMPLES].GetUint());
-                pMultiSampleStateCreateInfo->sampleShadingEnable = multiSampleStateObj[STR_FOSSILIZE_NODE_MULTI_SAMPLE_SAMPLE_SHADING_ENABLE].GetUint();
-                pMultiSampleStateCreateInfo->minSampleShading = multiSampleStateObj[STR_FOSSILIZE_NODE_MULTI_SAMPLE_MIN_SAMPLE_SHADING].GetFloat();
-                pMultiSampleStateCreateInfo->alphaToOneEnable = multiSampleStateObj[STR_FOSSILIZE_NODE_MULTI_ALPHA_TO_ONE_ENABLE].GetUint();
-                pMultiSampleStateCreateInfo->alphaToCoverageEnable = multiSampleStateObj[STR_FOSSILIZE_NODE_MULTI_ALPHA_TO_COVERAGE_ENABLE].GetUint();
-
-                // Set our recipe's multi sample state create info.
-                pGraphicsPipelineRecipe->SetMultisampleStateCreateInfo(pMultiSampleStateCreateInfo);
-
-                // Vertex input state create info.
-                const auto& vertexInputState = graphicsPipeline[STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_VERTEX_INPUT_STATE].GetObject();
-                VkPipelineVertexInputStateCreateInfo* pVertexInputCreateInfo = new VkPipelineVertexInputStateCreateInfo{};
-                pVertexInputCreateInfo->sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-
-                // Verify that the members exist.
-                ret = (ret && vertexInputState.HasMember(STR_FOSSILIZE_NODE_FLAGS));
-                ret = (ret && vertexInputState.HasMember(STR_FOSSILIZE_NODE_MULTI_VERTEX_INPUT_STATE_ATTRIBUTES));
-                ret = (ret && vertexInputState.HasMember(STR_FOSSILIZE_NODE_MULTI_VERTEX_INPUT_STATE_BINDINGS));
-                assert(ret);
-
-                // Verify the type.
-                ret = (ret && vertexInputState[STR_FOSSILIZE_NODE_FLAGS].IsUint());
-                ret = (ret && vertexInputState[STR_FOSSILIZE_NODE_MULTI_VERTEX_INPUT_STATE_ATTRIBUTES].IsArray());
-                assert(ret);
-
-                if (ret)
-                {
-                    // Vertex input state attributes descriptions.
-                    uint32_t attributeDescriptionCount = vertexInputState[STR_FOSSILIZE_NODE_MULTI_VERTEX_INPUT_STATE_ATTRIBUTES].GetArray().Size();
-                    if (attributeDescriptionCount > 0)
-                    {
-                        VkVertexInputAttributeDescription* pAttributeDescriptions = new VkVertexInputAttributeDescription[attributeDescriptionCount]{};
-                        uint32_t attributeIndex = 0;
-                        for (const auto& attribute : vertexInputState[STR_FOSSILIZE_NODE_MULTI_VERTEX_INPUT_STATE_ATTRIBUTES].GetArray())
-                        {
-                            // Verify that the members exist.
-                            ret = (ret && attribute.HasMember(STR_FOSSILIZE_NODE_MULTI_VERTEX_INPUT_STATE_ATTRIBUTES_LOCATION));
-                            ret = (ret && attribute.HasMember(STR_FOSSILIZE_NODE_MULTI_VERTEX_INPUT_STATE_ATTRIBUTES_BINDING));
-                            ret = (ret && attribute.HasMember(STR_FOSSILIZE_NODE_MULTI_VERTEX_INPUT_STATE_ATTRIBUTES_OFFSET));
-                            ret = (ret && attribute.HasMember(STR_FOSSILIZE_NODE_MULTI_VERTEX_INPUT_STATE_ATTRIBUTES_FORMAT));
-
-                            // Verify the type.
-                            ret = (ret && attribute[STR_FOSSILIZE_NODE_MULTI_VERTEX_INPUT_STATE_ATTRIBUTES_LOCATION].IsUint());
-                            ret = (ret && attribute[STR_FOSSILIZE_NODE_MULTI_VERTEX_INPUT_STATE_ATTRIBUTES_BINDING].IsUint());
-                            ret = (ret && attribute[STR_FOSSILIZE_NODE_MULTI_VERTEX_INPUT_STATE_ATTRIBUTES_OFFSET].IsUint());
-                            ret = (ret && attribute[STR_FOSSILIZE_NODE_MULTI_VERTEX_INPUT_STATE_ATTRIBUTES_FORMAT].IsUint());
-
-                            // Fill up our structure.
-                            pAttributeDescriptions[attributeIndex].location = attribute[STR_FOSSILIZE_NODE_MULTI_VERTEX_INPUT_STATE_ATTRIBUTES_LOCATION].GetUint();
-                            pAttributeDescriptions[attributeIndex].binding = attribute[STR_FOSSILIZE_NODE_MULTI_VERTEX_INPUT_STATE_ATTRIBUTES_BINDING].GetUint();
-                            pAttributeDescriptions[attributeIndex].offset = attribute[STR_FOSSILIZE_NODE_MULTI_VERTEX_INPUT_STATE_ATTRIBUTES_OFFSET].GetUint();
-                            pAttributeDescriptions[attributeIndex].format = static_cast<VkFormat>(attribute[STR_FOSSILIZE_NODE_MULTI_VERTEX_INPUT_STATE_ATTRIBUTES_FORMAT].GetUint());
-
-                            // Move to the next item.
-                            ++attributeIndex;
-                        }
-
-                        // Assign to our vertex input create info structure.
-                        pVertexInputCreateInfo->vertexAttributeDescriptionCount = attributeDescriptionCount;
-                        pVertexInputCreateInfo->pVertexAttributeDescriptions = pAttributeDescriptions;
-                    }
-                }
-
-                ret = (ret && vertexInputState[STR_FOSSILIZE_NODE_MULTI_VERTEX_INPUT_STATE_BINDINGS].IsArray());
-                assert(ret);
-
-                if (ret)
-                {
-                    // Vertex input state binding descriptions.
-                    uint32_t bindingDescriptionCount = vertexInputState[STR_FOSSILIZE_NODE_MULTI_VERTEX_INPUT_STATE_BINDINGS].GetArray().Size();
-
-                    if (bindingDescriptionCount > 0)
-                    {
-                        VkVertexInputBindingDescription* pBindingDescriptions = new VkVertexInputBindingDescription[bindingDescriptionCount]{};
-                        uint32_t bindingIndex = 0;
-                        for (const auto& binding : vertexInputState[STR_FOSSILIZE_NODE_MULTI_VERTEX_INPUT_STATE_BINDINGS].GetArray())
-                        {
-                            // Verify that the members exist.
-                            ret = (ret && binding.HasMember(STR_FOSSILIZE_NODE_MULTI_VERTEX_INPUT_STATE_BINDING_BINDING));
-                            ret = (ret && binding.HasMember(STR_FOSSILIZE_NODE_MULTI_VERTEX_INPUT_STATE_BINDING_STRIDE));
-                            ret = (ret && binding.HasMember(STR_FOSSILIZE_NODE_MULTI_VERTEX_INPUT_STATE_BINDING_INPUT_RATE));
-                            assert(ret);
-
-                            // Verify the type.
-                            ret = (ret && binding[STR_FOSSILIZE_NODE_MULTI_VERTEX_INPUT_STATE_BINDING_BINDING].IsUint());
-                            ret = (ret && binding[STR_FOSSILIZE_NODE_MULTI_VERTEX_INPUT_STATE_BINDING_STRIDE].IsUint());
-                            ret = (ret && binding[STR_FOSSILIZE_NODE_MULTI_VERTEX_INPUT_STATE_BINDING_INPUT_RATE].IsUint());
-                            assert(ret);
-
-                            // Fill up our structure.
-                            pBindingDescriptions[bindingIndex].binding = binding[STR_FOSSILIZE_NODE_MULTI_VERTEX_INPUT_STATE_BINDING_BINDING].GetUint();
-                            pBindingDescriptions[bindingIndex].stride = binding[STR_FOSSILIZE_NODE_MULTI_VERTEX_INPUT_STATE_BINDING_STRIDE].GetUint();
-                            pBindingDescriptions[bindingIndex].inputRate = static_cast<VkVertexInputRate>(binding[STR_FOSSILIZE_NODE_MULTI_VERTEX_INPUT_STATE_BINDING_INPUT_RATE].GetUint());
-
-                            // Move to the next item.
-                            ++bindingIndex;
-                        }
-
-                        // Assign to our vertex input create info structure.
-                        pVertexInputCreateInfo->vertexBindingDescriptionCount = bindingDescriptionCount;
-                        pVertexInputCreateInfo->pVertexBindingDescriptions = pBindingDescriptions;
-                    }
-                }
-
-                // Add the vertex input create info to our recipe object.
-                pGraphicsPipelineRecipe->SetVertexInputStateCreateInfo(pVertexInputCreateInfo);
-
-                // Rasterization state.
-                const auto& rasterizationStateObj = graphicsPipeline[STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_RASTERIZATION_STATE].GetObject();
-                VkPipelineRasterizationStateCreateInfo* pRasterizationStateCreateInfo = new VkPipelineRasterizationStateCreateInfo{};
-                pRasterizationStateCreateInfo->sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-
-                // Verify that the members exist.
-                ret = (ret && rasterizationStateObj.HasMember(STR_FOSSILIZE_NODE_FLAGS));
-                ret = (ret && rasterizationStateObj.HasMember(STR_FOSSILIZE_NODE_MULTI_RASTERIZATION_STATE_DEPTH_BIAS_CONSTANT_FACTOR));
-                ret = (ret && rasterizationStateObj.HasMember(STR_FOSSILIZE_NODE_RASTERIZATION_STATE_DEPTH_BIAS_SLOPE_FACTOR));
-                ret = (ret && rasterizationStateObj.HasMember(STR_FOSSILIZE_NODE_RASTERIZATION_STATE_DEPTH_BIAS_CLAMP));
-                ret = (ret && rasterizationStateObj.HasMember(STR_FOSSILIZE_NODE_RASTERIZATION_STATE_DEPTH_BIAS_ENABLE));
-                ret = (ret && rasterizationStateObj.HasMember(STR_FOSSILIZE_NODE_RASTERIZATION_STATE_DEPTH_CLAMP_ENABLE));
-                ret = (ret && rasterizationStateObj.HasMember(STR_FOSSILIZE_NODE_RASTERIZATION_STATE_POLYGON_MODE));
-                ret = (ret && rasterizationStateObj.HasMember(STR_FOSSILIZE_NODE_RASTERIZATION_STATE_RASTERIZER_DISCARD_ENABLE));
-                ret = (ret && rasterizationStateObj.HasMember(STR_FOSSILIZE_NODE_RASTERIZATION_STATE_FRONT_FACE));
-                ret = (ret && rasterizationStateObj.HasMember(STR_FOSSILIZE_NODE_RASTERIZATION_STATE_LINE_WIDTH));
-                ret = (ret && rasterizationStateObj.HasMember(STR_FOSSILIZE_NODE_RASTERIZATION_STATE_CULL_MDOE));
-                assert(ret);
-
-                // Verify the type.
-                ret = (ret && rasterizationStateObj[STR_FOSSILIZE_NODE_FLAGS].IsUint());
-                ret = (ret && rasterizationStateObj[STR_FOSSILIZE_NODE_MULTI_RASTERIZATION_STATE_DEPTH_BIAS_CONSTANT_FACTOR].IsFloat());
-                ret = (ret && rasterizationStateObj[STR_FOSSILIZE_NODE_RASTERIZATION_STATE_DEPTH_BIAS_SLOPE_FACTOR].IsFloat());
-                ret = (ret && rasterizationStateObj[STR_FOSSILIZE_NODE_RASTERIZATION_STATE_DEPTH_BIAS_CLAMP].IsFloat());
-                ret = (ret && rasterizationStateObj[STR_FOSSILIZE_NODE_RASTERIZATION_STATE_DEPTH_BIAS_ENABLE].IsUint());
-                ret = (ret && rasterizationStateObj[STR_FOSSILIZE_NODE_RASTERIZATION_STATE_DEPTH_CLAMP_ENABLE].IsUint());
-                ret = (ret && rasterizationStateObj[STR_FOSSILIZE_NODE_RASTERIZATION_STATE_POLYGON_MODE].IsUint());
-                ret = (ret && rasterizationStateObj[STR_FOSSILIZE_NODE_RASTERIZATION_STATE_RASTERIZER_DISCARD_ENABLE].IsUint());
-                ret = (ret && rasterizationStateObj[STR_FOSSILIZE_NODE_RASTERIZATION_STATE_FRONT_FACE].IsUint());
-                ret = (ret && rasterizationStateObj[STR_FOSSILIZE_NODE_RASTERIZATION_STATE_LINE_WIDTH].IsFloat());
-                ret = (ret && rasterizationStateObj[STR_FOSSILIZE_NODE_RASTERIZATION_STATE_CULL_MDOE].IsUint());
-                assert(ret);
-
-                // Fill up our structure.
-                pRasterizationStateCreateInfo->flags = rasterizationStateObj[STR_FOSSILIZE_NODE_FLAGS].GetUint();
-                pRasterizationStateCreateInfo->depthBiasConstantFactor = rasterizationStateObj[STR_FOSSILIZE_NODE_MULTI_RASTERIZATION_STATE_DEPTH_BIAS_CONSTANT_FACTOR].GetFloat();
-                pRasterizationStateCreateInfo->depthBiasSlopeFactor = rasterizationStateObj[STR_FOSSILIZE_NODE_RASTERIZATION_STATE_DEPTH_BIAS_SLOPE_FACTOR].GetFloat();
-                pRasterizationStateCreateInfo->depthBiasClamp = rasterizationStateObj[STR_FOSSILIZE_NODE_RASTERIZATION_STATE_DEPTH_BIAS_CLAMP].GetFloat();
-                pRasterizationStateCreateInfo->depthBiasEnable = rasterizationStateObj[STR_FOSSILIZE_NODE_RASTERIZATION_STATE_DEPTH_BIAS_ENABLE].GetUint();
-                pRasterizationStateCreateInfo->depthClampEnable = rasterizationStateObj[STR_FOSSILIZE_NODE_RASTERIZATION_STATE_DEPTH_CLAMP_ENABLE].GetUint();
-                pRasterizationStateCreateInfo->polygonMode = static_cast<VkPolygonMode>(rasterizationStateObj[STR_FOSSILIZE_NODE_RASTERIZATION_STATE_POLYGON_MODE].GetUint());
-                pRasterizationStateCreateInfo->rasterizerDiscardEnable = rasterizationStateObj[STR_FOSSILIZE_NODE_RASTERIZATION_STATE_RASTERIZER_DISCARD_ENABLE].GetUint();
-                pRasterizationStateCreateInfo->frontFace = static_cast<VkFrontFace>(rasterizationStateObj[STR_FOSSILIZE_NODE_RASTERIZATION_STATE_FRONT_FACE].GetUint());
-                pRasterizationStateCreateInfo->lineWidth = rasterizationStateObj[STR_FOSSILIZE_NODE_RASTERIZATION_STATE_LINE_WIDTH].GetFloat();
-                pRasterizationStateCreateInfo->cullMode = rasterizationStateObj[STR_FOSSILIZE_NODE_RASTERIZATION_STATE_CULL_MDOE].GetUint();
-
-                // Set the relevant recipe object member.
-                pGraphicsPipelineRecipe->SetRasterizationStateCreateInfo(pRasterizationStateCreateInfo);
-            }
-
-            // Input assembly state.
-            const auto& inputAssemblyStateObj = graphicsPipeline[STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_INPUT_ASSEMBLY_STATE].GetObject();
-            VkPipelineInputAssemblyStateCreateInfo* pInputAssemblyStateCreateInfo = new VkPipelineInputAssemblyStateCreateInfo{};
-            pInputAssemblyStateCreateInfo->sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-
-            // Verify that the members exist.
-            ret = (ret && inputAssemblyStateObj.HasMember(STR_FOSSILIZE_NODE_FLAGS));
-            ret = (ret && inputAssemblyStateObj.HasMember(STR_FOSSILIZE_NODE_INPUT_ASSEMBLY_STATE_TOPOLY));
-            ret = (ret && inputAssemblyStateObj.HasMember(STR_FOSSILIZE_NODE_INPUT_ASSEMBLY_STATE_PRIMITIVE_RESTART_ENABLE));
-            assert(ret);
-
-            // Verify the type.
-            ret = (ret && inputAssemblyStateObj[STR_FOSSILIZE_NODE_FLAGS].IsUint());
-            ret = (ret && inputAssemblyStateObj[STR_FOSSILIZE_NODE_INPUT_ASSEMBLY_STATE_TOPOLY].IsUint());
-            ret = (ret && inputAssemblyStateObj[STR_FOSSILIZE_NODE_INPUT_ASSEMBLY_STATE_PRIMITIVE_RESTART_ENABLE].IsUint());
-            assert(ret);
-
-            // Fill up our structure.
-            pInputAssemblyStateCreateInfo->flags = static_cast<VkPipelineVertexInputStateCreateFlags>(inputAssemblyStateObj[STR_FOSSILIZE_NODE_FLAGS].GetUint());
-            pInputAssemblyStateCreateInfo->topology = static_cast<VkPrimitiveTopology>(inputAssemblyStateObj[STR_FOSSILIZE_NODE_INPUT_ASSEMBLY_STATE_TOPOLY].GetUint());
-            pInputAssemblyStateCreateInfo->primitiveRestartEnable = static_cast<VkPipelineVertexInputStateCreateFlags>(inputAssemblyStateObj[STR_FOSSILIZE_NODE_INPUT_ASSEMBLY_STATE_PRIMITIVE_RESTART_ENABLE].GetUint());
-
-            // Set the input assembly state create info to our recipe structure.
-            pGraphicsPipelineRecipe->SetInputAssemblyStateCreateInfo(pInputAssemblyStateCreateInfo);
-
-            // Color blend state.
-            const auto& colorBlendStateObj = graphicsPipeline[STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_COLOR_BLEND_STATE].GetObject();
-            VkPipelineColorBlendStateCreateInfo* pColorBlendStateCreateInfo = new VkPipelineColorBlendStateCreateInfo{};
-            pColorBlendStateCreateInfo->sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-
-            // Verify that the members exist.
-            ret = (ret && colorBlendStateObj.HasMember(STR_FOSSILIZE_NODE_FLAGS));
-            ret = (ret && colorBlendStateObj.HasMember(STR_FOSSILIZE_NODE_COLOR_BLEND_STATE_LOGIC_OP));
-            ret = (ret && colorBlendStateObj.HasMember(STR_FOSSILIZE_NODE_COLOR_BLEND_STATE_LOGIC_OP_ENABLE));
-            ret = (ret && colorBlendStateObj.HasMember(STR_FOSSILIZE_NODE_COLOR_BLEND_STATE_BLEND_CONSTANTS));
-            ret = (ret && colorBlendStateObj.HasMember(STR_FOSSILIZE_NODE_COLOR_BLEND_STATE_ATTACHMENTS));
-            assert(ret);
-
-            // Verify the type.
-            ret = (ret && colorBlendStateObj[STR_FOSSILIZE_NODE_FLAGS].IsUint());
-            ret = (ret && colorBlendStateObj[STR_FOSSILIZE_NODE_COLOR_BLEND_STATE_LOGIC_OP].IsUint());
-            ret = (ret && colorBlendStateObj[STR_FOSSILIZE_NODE_COLOR_BLEND_STATE_LOGIC_OP_ENABLE].IsUint());
-            ret = (ret && colorBlendStateObj[STR_FOSSILIZE_NODE_COLOR_BLEND_STATE_BLEND_CONSTANTS].IsArray());
-            ret = (ret && colorBlendStateObj[STR_FOSSILIZE_NODE_COLOR_BLEND_STATE_ATTACHMENTS].IsArray());
-            assert(ret);
-
-            // Fill up our structure.
-            pColorBlendStateCreateInfo->flags = static_cast<VkPipelineVertexInputStateCreateFlags>(colorBlendStateObj[STR_FOSSILIZE_NODE_FLAGS].GetUint());
-            pColorBlendStateCreateInfo->logicOp = static_cast<VkLogicOp>(colorBlendStateObj[STR_FOSSILIZE_NODE_COLOR_BLEND_STATE_LOGIC_OP].GetUint());
-            pColorBlendStateCreateInfo->logicOpEnable = colorBlendStateObj[STR_FOSSILIZE_NODE_COLOR_BLEND_STATE_LOGIC_OP_ENABLE].GetUint();
-
-            // Blend constants.
-            const auto& blendConstants = colorBlendStateObj[STR_FOSSILIZE_NODE_COLOR_BLEND_STATE_BLEND_CONSTANTS].GetArray();
-            uint32_t blendConstantCount = blendConstants.Size();
-            const int BLEND_CONSTANT_COUNT = 4;
-            assert(blendConstantCount == BLEND_CONSTANT_COUNT);
-            if (blendConstantCount == BLEND_CONSTANT_COUNT)
-            {
-                uint32_t blendConstantIndex = 0;
-                for (const auto& blendConstant : blendConstants)
-                {
-                    pColorBlendStateCreateInfo->blendConstants[blendConstantIndex++] = blendConstant.GetFloat();
-                }
-            }
-
-            // Color blend attachments.
-            const auto& colorBlendAttachments = colorBlendStateObj[STR_FOSSILIZE_NODE_COLOR_BLEND_STATE_ATTACHMENTS].GetArray();
-            uint32_t colorBlendAttachmentCount = colorBlendAttachments.Size();
-            if (colorBlendAttachmentCount > 0)
-            {
-                uint32_t colorBlendAttachmentIndex = 0;
-                VkPipelineColorBlendAttachmentState* pColorBlendAttachement = new VkPipelineColorBlendAttachmentState[colorBlendAttachmentCount]{};
-                for (const auto& colorBlendAttachment : colorBlendAttachments)
-                {
                     // Verify that the members exist.
-                    ret = (ret && colorBlendAttachment.HasMember(STR_FOSSILIZE_NODE_COLOR_BLEND_ATTACHMENT_DST_ALPHA_BLEND_FACTOR));
-                    ret = (ret && colorBlendAttachment.HasMember(STR_FOSSILIZE_NODE_COLOR_BLEND_ATTACHMENT_SRC_ALPHA_BLEND_FACTOR));
-                    ret = (ret && colorBlendAttachment.HasMember(STR_FOSSILIZE_NODE_COLOR_BLEND_ATTACHMENT_DST_COLOR_BLEND_FACTOR));
-                    ret = (ret && colorBlendAttachment.HasMember(STR_FOSSILIZE_NODE_COLOR_BLEND_ATTACHMENT_SRC_COLOR_BLEND_FACTOR));
-                    ret = (ret && colorBlendAttachment.HasMember(STR_FOSSILIZE_NODE_COLOR_BLEND_ATTACHMENT_COLOR_WRITE_MASK));
-                    ret = (ret && colorBlendAttachment.HasMember(STR_FOSSILIZE_NODE_COLOR_BLEND_ATTACHMENT_ALPHA_BLEND_OP));
-                    ret = (ret && colorBlendAttachment.HasMember(STR_FOSSILIZE_NODE_COLOR_BLEND_ATTACHMENT_COLOR_BLEND_OP));
-                    ret = (ret && colorBlendAttachment.HasMember(STR_FOSSILIZE_NODE_COLOR_BLEND_ATTACHMENT_BLEND_ENABLE));
+                    ret = (ret && dynamicStateObj.HasMember(STR_FOSSILIZE_NODE_FLAGS));
+                    ret = (ret && dynamicStateObj.HasMember(STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_DYNAMIC_STATE));
                     assert(ret);
 
                     // Verify the type.
-                    ret = (ret && colorBlendAttachment[STR_FOSSILIZE_NODE_COLOR_BLEND_ATTACHMENT_DST_ALPHA_BLEND_FACTOR].IsUint());
-                    ret = (ret && colorBlendAttachment[STR_FOSSILIZE_NODE_COLOR_BLEND_ATTACHMENT_SRC_ALPHA_BLEND_FACTOR].IsUint());
-                    ret = (ret && colorBlendAttachment[STR_FOSSILIZE_NODE_COLOR_BLEND_ATTACHMENT_DST_COLOR_BLEND_FACTOR].IsUint());
-                    ret = (ret && colorBlendAttachment[STR_FOSSILIZE_NODE_COLOR_BLEND_ATTACHMENT_SRC_COLOR_BLEND_FACTOR].IsUint());
-                    ret = (ret && colorBlendAttachment[STR_FOSSILIZE_NODE_COLOR_BLEND_ATTACHMENT_COLOR_WRITE_MASK].IsUint());
-                    ret = (ret && colorBlendAttachment[STR_FOSSILIZE_NODE_COLOR_BLEND_ATTACHMENT_ALPHA_BLEND_OP].IsUint());
-                    ret = (ret && colorBlendAttachment[STR_FOSSILIZE_NODE_COLOR_BLEND_ATTACHMENT_COLOR_BLEND_OP].IsUint());
-                    ret = (ret && colorBlendAttachment[STR_FOSSILIZE_NODE_COLOR_BLEND_ATTACHMENT_BLEND_ENABLE].IsUint());
+                    ret = (ret && dynamicStateObj[STR_FOSSILIZE_NODE_FLAGS].IsUint());
+                    ret = (ret && dynamicStateObj[STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_DYNAMIC_STATE].IsArray());
+                    assert(ret);
+
+                    if (ret)
+                    {
+                        uint32_t dynamicStateCount = dynamicStateObj[STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_DYNAMIC_STATE].GetArray().Size();
+                        if (dynamicStateCount > 0)
+                        {
+                            // Allocate our dynamic state create info.
+                            VkPipelineDynamicStateCreateInfo* pDynamicStateCreateInfo = new VkPipelineDynamicStateCreateInfo{};
+                            pDynamicStateCreateInfo->sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+                            pDynamicStateCreateInfo->flags = static_cast<VkPipelineDynamicStateCreateFlags>(dynamicStateObj[STR_FOSSILIZE_NODE_FLAGS].GetUint());
+                            pDynamicStateCreateInfo->dynamicStateCount = dynamicStateCount;
+
+                            // Create an array of dynamic states.
+                            VkDynamicState* pDynamicStates = new VkDynamicState[dynamicStateCount]{};
+
+                            // The index within our array.
+                            size_t dynamicStateIndex = 0;
+
+                            for (const auto& dynamicState : dynamicStateObj[STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_DYNAMIC_STATE].GetArray())
+                            {
+                                VkDynamicState diValue = static_cast<VkDynamicState>(dynamicState.GetUint());
+                                pDynamicStates[dynamicStateIndex++] = diValue;
+                            }
+
+                            // Add the dynamic states array to our create info object.
+                            pDynamicStateCreateInfo->pDynamicStates = pDynamicStates;
+
+                            // Add the dynamic state create info to the graphics pipeline create info.
+                            pGraphicsPiplineCreateInfo->pDynamicState = pDynamicStateCreateInfo;
+                        }
+                    }
+
+                    // Multisample state.
+                    const auto& multiSampleStateObj = graphicsPipeline[STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_MULTISAMPLE_STATE].GetObject();
+                    VkPipelineMultisampleStateCreateInfo* pMultiSampleStateCreateInfo = new VkPipelineMultisampleStateCreateInfo{};
+                    pMultiSampleStateCreateInfo->sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+
+                    // Verify that the members exist.
+                    ret = (ret && multiSampleStateObj.HasMember(STR_FOSSILIZE_NODE_FLAGS));
+                    ret = (ret && multiSampleStateObj.HasMember(STR_FOSSILIZE_NODE_MULTI_SAMPLE_STATE_RASTERIZATION_SAMPLES));
+                    ret = (ret && multiSampleStateObj.HasMember(STR_FOSSILIZE_NODE_MULTI_SAMPLE_SAMPLE_SHADING_ENABLE));
+                    ret = (ret && multiSampleStateObj.HasMember(STR_FOSSILIZE_NODE_MULTI_SAMPLE_MIN_SAMPLE_SHADING));
+                    ret = (ret && multiSampleStateObj.HasMember(STR_FOSSILIZE_NODE_MULTI_ALPHA_TO_ONE_ENABLE));
+                    ret = (ret && multiSampleStateObj.HasMember(STR_FOSSILIZE_NODE_MULTI_ALPHA_TO_COVERAGE_ENABLE));
+                    assert(ret);
+
+                    // Verify the type.
+                    ret = (ret && multiSampleStateObj[STR_FOSSILIZE_NODE_FLAGS].IsUint());
+                    ret = (ret && multiSampleStateObj[STR_FOSSILIZE_NODE_MULTI_SAMPLE_STATE_RASTERIZATION_SAMPLES].IsInt64());
+                    ret = (ret && multiSampleStateObj[STR_FOSSILIZE_NODE_MULTI_SAMPLE_SAMPLE_SHADING_ENABLE].IsUint());
+                    ret = (ret && multiSampleStateObj[STR_FOSSILIZE_NODE_MULTI_SAMPLE_MIN_SAMPLE_SHADING].IsFloat());
+                    ret = (ret && multiSampleStateObj[STR_FOSSILIZE_NODE_MULTI_ALPHA_TO_ONE_ENABLE].IsUint());
+                    ret = (ret && multiSampleStateObj[STR_FOSSILIZE_NODE_MULTI_ALPHA_TO_COVERAGE_ENABLE].IsUint());
                     assert(ret);
 
                     // Fill up our structure.
-                    pColorBlendAttachement[colorBlendAttachmentIndex].dstAlphaBlendFactor = static_cast<VkBlendFactor>(colorBlendAttachment[STR_FOSSILIZE_NODE_COLOR_BLEND_ATTACHMENT_DST_ALPHA_BLEND_FACTOR].GetUint());
-                    pColorBlendAttachement[colorBlendAttachmentIndex].srcAlphaBlendFactor = static_cast<VkBlendFactor>(colorBlendAttachment[STR_FOSSILIZE_NODE_COLOR_BLEND_ATTACHMENT_SRC_ALPHA_BLEND_FACTOR].GetUint());
-                    pColorBlendAttachement[colorBlendAttachmentIndex].dstColorBlendFactor = static_cast<VkBlendFactor>(colorBlendAttachment[STR_FOSSILIZE_NODE_COLOR_BLEND_ATTACHMENT_DST_COLOR_BLEND_FACTOR].GetUint());
-                    pColorBlendAttachement[colorBlendAttachmentIndex].srcColorBlendFactor = static_cast<VkBlendFactor>(colorBlendAttachment[STR_FOSSILIZE_NODE_COLOR_BLEND_ATTACHMENT_SRC_COLOR_BLEND_FACTOR].GetUint());
-                    pColorBlendAttachement[colorBlendAttachmentIndex].colorWriteMask = static_cast<VkColorComponentFlags>(colorBlendAttachment[STR_FOSSILIZE_NODE_COLOR_BLEND_ATTACHMENT_COLOR_WRITE_MASK].GetUint());
-                    pColorBlendAttachement[colorBlendAttachmentIndex].alphaBlendOp = static_cast<VkBlendOp>(colorBlendAttachment[STR_FOSSILIZE_NODE_COLOR_BLEND_ATTACHMENT_ALPHA_BLEND_OP].GetUint());
-                    pColorBlendAttachement[colorBlendAttachmentIndex].colorBlendOp = static_cast<VkBlendOp>(colorBlendAttachment[STR_FOSSILIZE_NODE_COLOR_BLEND_ATTACHMENT_COLOR_BLEND_OP].GetUint());
-                    pColorBlendAttachement[colorBlendAttachmentIndex].blendEnable = colorBlendAttachment[STR_FOSSILIZE_NODE_COLOR_BLEND_ATTACHMENT_BLEND_ENABLE].GetUint();
+                    pMultiSampleStateCreateInfo->flags = multiSampleStateObj[STR_FOSSILIZE_NODE_FLAGS].GetUint();
+                    pMultiSampleStateCreateInfo->rasterizationSamples = static_cast<VkSampleCountFlagBits>(multiSampleStateObj[STR_FOSSILIZE_NODE_MULTI_SAMPLE_STATE_RASTERIZATION_SAMPLES].GetUint());
+                    pMultiSampleStateCreateInfo->sampleShadingEnable = multiSampleStateObj[STR_FOSSILIZE_NODE_MULTI_SAMPLE_SAMPLE_SHADING_ENABLE].GetUint();
+                    pMultiSampleStateCreateInfo->minSampleShading = multiSampleStateObj[STR_FOSSILIZE_NODE_MULTI_SAMPLE_MIN_SAMPLE_SHADING].GetFloat();
+                    pMultiSampleStateCreateInfo->alphaToOneEnable = multiSampleStateObj[STR_FOSSILIZE_NODE_MULTI_ALPHA_TO_ONE_ENABLE].GetUint();
+                    pMultiSampleStateCreateInfo->alphaToCoverageEnable = multiSampleStateObj[STR_FOSSILIZE_NODE_MULTI_ALPHA_TO_COVERAGE_ENABLE].GetUint();
 
-                    // Move to the next item.
-                    ++colorBlendAttachmentIndex;
+                    // Set our recipe's multi sample state create info.
+                    pGraphicsPipelineRecipe->SetMultisampleStateCreateInfo(pMultiSampleStateCreateInfo);
+
+                    // Vertex input state create info.
+                    const auto& vertexInputState = graphicsPipeline[STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_VERTEX_INPUT_STATE].GetObject();
+                    VkPipelineVertexInputStateCreateInfo* pVertexInputCreateInfo = new VkPipelineVertexInputStateCreateInfo{};
+                    pVertexInputCreateInfo->sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+
+                    // Verify that the members exist.
+                    ret = (ret && vertexInputState.HasMember(STR_FOSSILIZE_NODE_FLAGS));
+                    ret = (ret && vertexInputState.HasMember(STR_FOSSILIZE_NODE_MULTI_VERTEX_INPUT_STATE_ATTRIBUTES));
+                    ret = (ret && vertexInputState.HasMember(STR_FOSSILIZE_NODE_MULTI_VERTEX_INPUT_STATE_BINDINGS));
+                    assert(ret);
+
+                    // Verify the type.
+                    ret = (ret && vertexInputState[STR_FOSSILIZE_NODE_FLAGS].IsUint());
+                    ret = (ret && vertexInputState[STR_FOSSILIZE_NODE_MULTI_VERTEX_INPUT_STATE_ATTRIBUTES].IsArray());
+                    assert(ret);
+
+                    if (ret)
+                    {
+                        // Vertex input state attributes descriptions.
+                        uint32_t attributeDescriptionCount = vertexInputState[STR_FOSSILIZE_NODE_MULTI_VERTEX_INPUT_STATE_ATTRIBUTES].GetArray().Size();
+                        if (attributeDescriptionCount > 0)
+                        {
+                            VkVertexInputAttributeDescription* pAttributeDescriptions = new VkVertexInputAttributeDescription[attributeDescriptionCount]{};
+                            uint32_t attributeIndex = 0;
+                            for (const auto& attribute : vertexInputState[STR_FOSSILIZE_NODE_MULTI_VERTEX_INPUT_STATE_ATTRIBUTES].GetArray())
+                            {
+                                // Verify that the members exist.
+                                ret = (ret && attribute.HasMember(STR_FOSSILIZE_NODE_MULTI_VERTEX_INPUT_STATE_ATTRIBUTES_LOCATION));
+                                ret = (ret && attribute.HasMember(STR_FOSSILIZE_NODE_MULTI_VERTEX_INPUT_STATE_ATTRIBUTES_BINDING));
+                                ret = (ret && attribute.HasMember(STR_FOSSILIZE_NODE_MULTI_VERTEX_INPUT_STATE_ATTRIBUTES_OFFSET));
+                                ret = (ret && attribute.HasMember(STR_FOSSILIZE_NODE_MULTI_VERTEX_INPUT_STATE_ATTRIBUTES_FORMAT));
+
+                                // Verify the type.
+                                ret = (ret && attribute[STR_FOSSILIZE_NODE_MULTI_VERTEX_INPUT_STATE_ATTRIBUTES_LOCATION].IsUint());
+                                ret = (ret && attribute[STR_FOSSILIZE_NODE_MULTI_VERTEX_INPUT_STATE_ATTRIBUTES_BINDING].IsUint());
+                                ret = (ret && attribute[STR_FOSSILIZE_NODE_MULTI_VERTEX_INPUT_STATE_ATTRIBUTES_OFFSET].IsUint());
+                                ret = (ret && attribute[STR_FOSSILIZE_NODE_MULTI_VERTEX_INPUT_STATE_ATTRIBUTES_FORMAT].IsUint());
+
+                                // Fill up our structure.
+                                pAttributeDescriptions[attributeIndex].location = attribute[STR_FOSSILIZE_NODE_MULTI_VERTEX_INPUT_STATE_ATTRIBUTES_LOCATION].GetUint();
+                                pAttributeDescriptions[attributeIndex].binding = attribute[STR_FOSSILIZE_NODE_MULTI_VERTEX_INPUT_STATE_ATTRIBUTES_BINDING].GetUint();
+                                pAttributeDescriptions[attributeIndex].offset = attribute[STR_FOSSILIZE_NODE_MULTI_VERTEX_INPUT_STATE_ATTRIBUTES_OFFSET].GetUint();
+                                pAttributeDescriptions[attributeIndex].format = static_cast<VkFormat>(attribute[STR_FOSSILIZE_NODE_MULTI_VERTEX_INPUT_STATE_ATTRIBUTES_FORMAT].GetUint());
+
+                                // Move to the next item.
+                                ++attributeIndex;
+                            }
+
+                            // Assign to our vertex input create info structure.
+                            pVertexInputCreateInfo->vertexAttributeDescriptionCount = attributeDescriptionCount;
+                            pVertexInputCreateInfo->pVertexAttributeDescriptions = pAttributeDescriptions;
+                        }
+                    }
+
+                    ret = (ret && vertexInputState[STR_FOSSILIZE_NODE_MULTI_VERTEX_INPUT_STATE_BINDINGS].IsArray());
+                    assert(ret);
+
+                    if (ret)
+                    {
+                        // Vertex input state binding descriptions.
+                        uint32_t bindingDescriptionCount = vertexInputState[STR_FOSSILIZE_NODE_MULTI_VERTEX_INPUT_STATE_BINDINGS].GetArray().Size();
+
+                        if (bindingDescriptionCount > 0)
+                        {
+                            VkVertexInputBindingDescription* pBindingDescriptions = new VkVertexInputBindingDescription[bindingDescriptionCount]{};
+                            uint32_t bindingIndex = 0;
+                            for (const auto& binding : vertexInputState[STR_FOSSILIZE_NODE_MULTI_VERTEX_INPUT_STATE_BINDINGS].GetArray())
+                            {
+                                // Verify that the members exist.
+                                ret = (ret && binding.HasMember(STR_FOSSILIZE_NODE_MULTI_VERTEX_INPUT_STATE_BINDING_BINDING));
+                                ret = (ret && binding.HasMember(STR_FOSSILIZE_NODE_MULTI_VERTEX_INPUT_STATE_BINDING_STRIDE));
+                                ret = (ret && binding.HasMember(STR_FOSSILIZE_NODE_MULTI_VERTEX_INPUT_STATE_BINDING_INPUT_RATE));
+                                assert(ret);
+
+                                // Verify the type.
+                                ret = (ret && binding[STR_FOSSILIZE_NODE_MULTI_VERTEX_INPUT_STATE_BINDING_BINDING].IsUint());
+                                ret = (ret && binding[STR_FOSSILIZE_NODE_MULTI_VERTEX_INPUT_STATE_BINDING_STRIDE].IsUint());
+                                ret = (ret && binding[STR_FOSSILIZE_NODE_MULTI_VERTEX_INPUT_STATE_BINDING_INPUT_RATE].IsUint());
+                                assert(ret);
+
+                                // Fill up our structure.
+                                pBindingDescriptions[bindingIndex].binding = binding[STR_FOSSILIZE_NODE_MULTI_VERTEX_INPUT_STATE_BINDING_BINDING].GetUint();
+                                pBindingDescriptions[bindingIndex].stride = binding[STR_FOSSILIZE_NODE_MULTI_VERTEX_INPUT_STATE_BINDING_STRIDE].GetUint();
+                                pBindingDescriptions[bindingIndex].inputRate = static_cast<VkVertexInputRate>(binding[STR_FOSSILIZE_NODE_MULTI_VERTEX_INPUT_STATE_BINDING_INPUT_RATE].GetUint());
+
+                                // Move to the next item.
+                                ++bindingIndex;
+                            }
+
+                            // Assign to our vertex input create info structure.
+                            pVertexInputCreateInfo->vertexBindingDescriptionCount = bindingDescriptionCount;
+                            pVertexInputCreateInfo->pVertexBindingDescriptions = pBindingDescriptions;
+                        }
+                    }
+
+                    // Add the vertex input create info to our recipe object.
+                    pGraphicsPipelineRecipe->SetVertexInputStateCreateInfo(pVertexInputCreateInfo);
+
+                    // Rasterization state.
+                    const auto& rasterizationStateObj = graphicsPipeline[STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_RASTERIZATION_STATE].GetObject();
+                    VkPipelineRasterizationStateCreateInfo* pRasterizationStateCreateInfo = new VkPipelineRasterizationStateCreateInfo{};
+                    pRasterizationStateCreateInfo->sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+
+                    // Verify that the members exist.
+                    ret = (ret && rasterizationStateObj.HasMember(STR_FOSSILIZE_NODE_FLAGS));
+                    ret = (ret && rasterizationStateObj.HasMember(STR_FOSSILIZE_NODE_MULTI_RASTERIZATION_STATE_DEPTH_BIAS_CONSTANT_FACTOR));
+                    ret = (ret && rasterizationStateObj.HasMember(STR_FOSSILIZE_NODE_RASTERIZATION_STATE_DEPTH_BIAS_SLOPE_FACTOR));
+                    ret = (ret && rasterizationStateObj.HasMember(STR_FOSSILIZE_NODE_RASTERIZATION_STATE_DEPTH_BIAS_CLAMP));
+                    ret = (ret && rasterizationStateObj.HasMember(STR_FOSSILIZE_NODE_RASTERIZATION_STATE_DEPTH_BIAS_ENABLE));
+                    ret = (ret && rasterizationStateObj.HasMember(STR_FOSSILIZE_NODE_RASTERIZATION_STATE_DEPTH_CLAMP_ENABLE));
+                    ret = (ret && rasterizationStateObj.HasMember(STR_FOSSILIZE_NODE_RASTERIZATION_STATE_POLYGON_MODE));
+                    ret = (ret && rasterizationStateObj.HasMember(STR_FOSSILIZE_NODE_RASTERIZATION_STATE_RASTERIZER_DISCARD_ENABLE));
+                    ret = (ret && rasterizationStateObj.HasMember(STR_FOSSILIZE_NODE_RASTERIZATION_STATE_FRONT_FACE));
+                    ret = (ret && rasterizationStateObj.HasMember(STR_FOSSILIZE_NODE_RASTERIZATION_STATE_LINE_WIDTH));
+                    ret = (ret && rasterizationStateObj.HasMember(STR_FOSSILIZE_NODE_RASTERIZATION_STATE_CULL_MDOE));
+                    assert(ret);
+
+                    // Verify the type.
+                    ret = (ret && rasterizationStateObj[STR_FOSSILIZE_NODE_FLAGS].IsUint());
+                    ret = (ret && rasterizationStateObj[STR_FOSSILIZE_NODE_MULTI_RASTERIZATION_STATE_DEPTH_BIAS_CONSTANT_FACTOR].IsFloat());
+                    ret = (ret && rasterizationStateObj[STR_FOSSILIZE_NODE_RASTERIZATION_STATE_DEPTH_BIAS_SLOPE_FACTOR].IsFloat());
+                    ret = (ret && rasterizationStateObj[STR_FOSSILIZE_NODE_RASTERIZATION_STATE_DEPTH_BIAS_CLAMP].IsFloat());
+                    ret = (ret && rasterizationStateObj[STR_FOSSILIZE_NODE_RASTERIZATION_STATE_DEPTH_BIAS_ENABLE].IsUint());
+                    ret = (ret && rasterizationStateObj[STR_FOSSILIZE_NODE_RASTERIZATION_STATE_DEPTH_CLAMP_ENABLE].IsUint());
+                    ret = (ret && rasterizationStateObj[STR_FOSSILIZE_NODE_RASTERIZATION_STATE_POLYGON_MODE].IsUint());
+                    ret = (ret && rasterizationStateObj[STR_FOSSILIZE_NODE_RASTERIZATION_STATE_RASTERIZER_DISCARD_ENABLE].IsUint());
+                    ret = (ret && rasterizationStateObj[STR_FOSSILIZE_NODE_RASTERIZATION_STATE_FRONT_FACE].IsUint());
+                    ret = (ret && rasterizationStateObj[STR_FOSSILIZE_NODE_RASTERIZATION_STATE_LINE_WIDTH].IsFloat());
+                    ret = (ret && rasterizationStateObj[STR_FOSSILIZE_NODE_RASTERIZATION_STATE_CULL_MDOE].IsUint());
+                    assert(ret);
+
+                    // Fill up our structure.
+                    pRasterizationStateCreateInfo->flags = rasterizationStateObj[STR_FOSSILIZE_NODE_FLAGS].GetUint();
+                    pRasterizationStateCreateInfo->depthBiasConstantFactor = rasterizationStateObj[STR_FOSSILIZE_NODE_MULTI_RASTERIZATION_STATE_DEPTH_BIAS_CONSTANT_FACTOR].GetFloat();
+                    pRasterizationStateCreateInfo->depthBiasSlopeFactor = rasterizationStateObj[STR_FOSSILIZE_NODE_RASTERIZATION_STATE_DEPTH_BIAS_SLOPE_FACTOR].GetFloat();
+                    pRasterizationStateCreateInfo->depthBiasClamp = rasterizationStateObj[STR_FOSSILIZE_NODE_RASTERIZATION_STATE_DEPTH_BIAS_CLAMP].GetFloat();
+                    pRasterizationStateCreateInfo->depthBiasEnable = rasterizationStateObj[STR_FOSSILIZE_NODE_RASTERIZATION_STATE_DEPTH_BIAS_ENABLE].GetUint();
+                    pRasterizationStateCreateInfo->depthClampEnable = rasterizationStateObj[STR_FOSSILIZE_NODE_RASTERIZATION_STATE_DEPTH_CLAMP_ENABLE].GetUint();
+                    pRasterizationStateCreateInfo->polygonMode = static_cast<VkPolygonMode>(rasterizationStateObj[STR_FOSSILIZE_NODE_RASTERIZATION_STATE_POLYGON_MODE].GetUint());
+                    pRasterizationStateCreateInfo->rasterizerDiscardEnable = rasterizationStateObj[STR_FOSSILIZE_NODE_RASTERIZATION_STATE_RASTERIZER_DISCARD_ENABLE].GetUint();
+                    pRasterizationStateCreateInfo->frontFace = static_cast<VkFrontFace>(rasterizationStateObj[STR_FOSSILIZE_NODE_RASTERIZATION_STATE_FRONT_FACE].GetUint());
+                    pRasterizationStateCreateInfo->lineWidth = rasterizationStateObj[STR_FOSSILIZE_NODE_RASTERIZATION_STATE_LINE_WIDTH].GetFloat();
+                    pRasterizationStateCreateInfo->cullMode = rasterizationStateObj[STR_FOSSILIZE_NODE_RASTERIZATION_STATE_CULL_MDOE].GetUint();
+
+                    // Set the relevant recipe object member.
+                    pGraphicsPipelineRecipe->SetRasterizationStateCreateInfo(pRasterizationStateCreateInfo);
                 }
 
-                // Assign to our color blend state create info structure.
-                pColorBlendStateCreateInfo->attachmentCount = colorBlendAttachmentCount;
-                pColorBlendStateCreateInfo->pAttachments = pColorBlendAttachement;
+                // Input assembly state.
+                const auto& inputAssemblyStateObj = graphicsPipeline[STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_INPUT_ASSEMBLY_STATE].GetObject();
+                VkPipelineInputAssemblyStateCreateInfo* pInputAssemblyStateCreateInfo = new VkPipelineInputAssemblyStateCreateInfo{};
+                pInputAssemblyStateCreateInfo->sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
 
-                // Set the relevant member in our recipe object.
-                pGraphicsPipelineRecipe->SetColorBlendStateCreateInfo(pColorBlendStateCreateInfo);
-            }
+                // Verify that the members exist.
+                ret = (ret && inputAssemblyStateObj.HasMember(STR_FOSSILIZE_NODE_FLAGS));
+                ret = (ret && inputAssemblyStateObj.HasMember(STR_FOSSILIZE_NODE_INPUT_ASSEMBLY_STATE_TOPOLY));
+                ret = (ret && inputAssemblyStateObj.HasMember(STR_FOSSILIZE_NODE_INPUT_ASSEMBLY_STATE_PRIMITIVE_RESTART_ENABLE));
+                assert(ret);
 
-            // Viewport state.
-            const auto& viewportStateObj = graphicsPipeline[STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_VIEWPORT_STATE].GetObject();
-            VkPipelineViewportStateCreateInfo* pViewportState = new VkPipelineViewportStateCreateInfo{};
-            pViewportState->sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+                // Verify the type.
+                ret = (ret && inputAssemblyStateObj[STR_FOSSILIZE_NODE_FLAGS].IsUint());
+                ret = (ret && inputAssemblyStateObj[STR_FOSSILIZE_NODE_INPUT_ASSEMBLY_STATE_TOPOLY].IsUint());
+                ret = (ret && inputAssemblyStateObj[STR_FOSSILIZE_NODE_INPUT_ASSEMBLY_STATE_PRIMITIVE_RESTART_ENABLE].IsUint());
+                assert(ret);
 
-            // Verify that the members exist.
-            ret = (ret && viewportStateObj.HasMember(STR_FOSSILIZE_NODE_FLAGS));
-            ret = (ret && viewportStateObj.HasMember(STR_FOSSILIZE_NODE_VIEWPORT_STATE_VIEWPORT_COUNT));
-            ret = (ret && viewportStateObj.HasMember(STR_FOSSILIZE_NODE_VIEWPORT_STATE_SCISSOR_COUNT));
-            assert(ret);
+                // Fill up our structure.
+                pInputAssemblyStateCreateInfo->flags = static_cast<VkPipelineVertexInputStateCreateFlags>(inputAssemblyStateObj[STR_FOSSILIZE_NODE_FLAGS].GetUint());
+                pInputAssemblyStateCreateInfo->topology = static_cast<VkPrimitiveTopology>(inputAssemblyStateObj[STR_FOSSILIZE_NODE_INPUT_ASSEMBLY_STATE_TOPOLY].GetUint());
+                pInputAssemblyStateCreateInfo->primitiveRestartEnable = static_cast<VkPipelineVertexInputStateCreateFlags>(inputAssemblyStateObj[STR_FOSSILIZE_NODE_INPUT_ASSEMBLY_STATE_PRIMITIVE_RESTART_ENABLE].GetUint());
 
-            // Verify the type.
-            ret = (ret && viewportStateObj[STR_FOSSILIZE_NODE_FLAGS].IsUint());
-            ret = (ret && viewportStateObj[STR_FOSSILIZE_NODE_VIEWPORT_STATE_VIEWPORT_COUNT].IsUint());
-            ret = (ret && viewportStateObj[STR_FOSSILIZE_NODE_VIEWPORT_STATE_SCISSOR_COUNT].IsUint());
-            assert(ret);
+                // Set the input assembly state create info to our recipe structure.
+                pGraphicsPipelineRecipe->SetInputAssemblyStateCreateInfo(pInputAssemblyStateCreateInfo);
 
-            // Fill up our structure.
-            pViewportState->flags = static_cast<VkPipelineViewportStateCreateFlags>(viewportStateObj[STR_FOSSILIZE_NODE_FLAGS].GetUint());
-            pViewportState->viewportCount = viewportStateObj[STR_FOSSILIZE_NODE_VIEWPORT_STATE_VIEWPORT_COUNT].GetUint();
-            pViewportState->scissorCount = viewportStateObj[STR_FOSSILIZE_NODE_VIEWPORT_STATE_SCISSOR_COUNT].GetUint();
+                // Color blend state.
+                const auto& colorBlendStateObj = graphicsPipeline[STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_COLOR_BLEND_STATE].GetObject();
+                VkPipelineColorBlendStateCreateInfo* pColorBlendStateCreateInfo = new VkPipelineColorBlendStateCreateInfo{};
+                pColorBlendStateCreateInfo->sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
 
-            // Set the relevant member of our recipe object.
-            pGraphicsPipelineRecipe->SetViweportStateCreateInfo(pViewportState);
+                // Verify that the members exist.
+                ret = (ret && colorBlendStateObj.HasMember(STR_FOSSILIZE_NODE_FLAGS));
+                ret = (ret && colorBlendStateObj.HasMember(STR_FOSSILIZE_NODE_COLOR_BLEND_STATE_LOGIC_OP));
+                ret = (ret && colorBlendStateObj.HasMember(STR_FOSSILIZE_NODE_COLOR_BLEND_STATE_LOGIC_OP_ENABLE));
+                ret = (ret && colorBlendStateObj.HasMember(STR_FOSSILIZE_NODE_COLOR_BLEND_STATE_BLEND_CONSTANTS));
+                ret = (ret && colorBlendStateObj.HasMember(STR_FOSSILIZE_NODE_COLOR_BLEND_STATE_ATTACHMENTS));
+                assert(ret);
 
-            // Depth stencil state.
-            const auto& depthStencilStateObj = graphicsPipeline[STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_DEPTH_STENCIL_STATE].GetObject();
-            VkPipelineDepthStencilStateCreateInfo* pDepthStencilStateCreateInfo = new VkPipelineDepthStencilStateCreateInfo{};
-            pDepthStencilStateCreateInfo->sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+                // Verify the type.
+                ret = (ret && colorBlendStateObj[STR_FOSSILIZE_NODE_FLAGS].IsUint());
+                ret = (ret && colorBlendStateObj[STR_FOSSILIZE_NODE_COLOR_BLEND_STATE_LOGIC_OP].IsUint());
+                ret = (ret && colorBlendStateObj[STR_FOSSILIZE_NODE_COLOR_BLEND_STATE_LOGIC_OP_ENABLE].IsUint());
+                ret = (ret && colorBlendStateObj[STR_FOSSILIZE_NODE_COLOR_BLEND_STATE_BLEND_CONSTANTS].IsArray());
+                ret = (ret && colorBlendStateObj[STR_FOSSILIZE_NODE_COLOR_BLEND_STATE_ATTACHMENTS].IsArray());
+                assert(ret);
 
-            // Verify that the members exist.
-            ret = (ret && depthStencilStateObj.HasMember(STR_FOSSILIZE_NODE_FLAGS));
-            ret = (ret && depthStencilStateObj.HasMember(STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_ENABLE));
-            ret = (ret && depthStencilStateObj.HasMember(STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_MAX_DEPTH_BOUNDS));
-            ret = (ret && depthStencilStateObj.HasMember(STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_MIN_DEPTH_BOUNDS));
-            ret = (ret && depthStencilStateObj.HasMember(STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_DEPTH_BOUNDS_TEST_ENABLE));
-            ret = (ret && depthStencilStateObj.HasMember(STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_DEPTH_WRITE_ENABLE));
-            ret = (ret && depthStencilStateObj.HasMember(STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_DEPTH_TEST_ENABLE));
-            ret = (ret && depthStencilStateObj.HasMember(STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_DEPTH_COMPARE_OP));
-            ret = (ret && depthStencilStateObj.HasMember(STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_FRONT));
-            ret = (ret && depthStencilStateObj.HasMember(STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_BACK));
-            assert(ret);
+                // Fill up our structure.
+                pColorBlendStateCreateInfo->flags = static_cast<VkPipelineVertexInputStateCreateFlags>(colorBlendStateObj[STR_FOSSILIZE_NODE_FLAGS].GetUint());
+                pColorBlendStateCreateInfo->logicOp = static_cast<VkLogicOp>(colorBlendStateObj[STR_FOSSILIZE_NODE_COLOR_BLEND_STATE_LOGIC_OP].GetUint());
+                pColorBlendStateCreateInfo->logicOpEnable = colorBlendStateObj[STR_FOSSILIZE_NODE_COLOR_BLEND_STATE_LOGIC_OP_ENABLE].GetUint();
 
-            // Verify the type.
-            ret = (ret && depthStencilStateObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_ENABLE].IsUint());
-            ret = (ret && depthStencilStateObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_MAX_DEPTH_BOUNDS].IsFloat());
-            ret = (ret && depthStencilStateObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_MIN_DEPTH_BOUNDS].IsFloat());
-            ret = (ret && depthStencilStateObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_DEPTH_BOUNDS_TEST_ENABLE].IsUint());
-            ret = (ret && depthStencilStateObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_DEPTH_WRITE_ENABLE].IsUint());
-            ret = (ret && depthStencilStateObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_DEPTH_TEST_ENABLE].IsUint());
-            ret = (ret && depthStencilStateObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_DEPTH_COMPARE_OP].IsUint());
-            ret = (ret && depthStencilStateObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_FRONT].IsObject());
-            ret = (ret && depthStencilStateObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_BACK].IsObject());
-            assert(ret);
+                // Blend constants.
+                const auto& blendConstants = colorBlendStateObj[STR_FOSSILIZE_NODE_COLOR_BLEND_STATE_BLEND_CONSTANTS].GetArray();
+                uint32_t blendConstantCount = blendConstants.Size();
+                const int BLEND_CONSTANT_COUNT = 4;
+                assert(blendConstantCount == BLEND_CONSTANT_COUNT);
+                if (blendConstantCount == BLEND_CONSTANT_COUNT)
+                {
+                    uint32_t blendConstantIndex = 0;
+                    for (const auto& blendConstant : blendConstants)
+                    {
+                        pColorBlendStateCreateInfo->blendConstants[blendConstantIndex++] = blendConstant.GetFloat();
+                    }
+                }
 
-            // Fill up our structure.
-            pDepthStencilStateCreateInfo->flags = static_cast<VkPipelineViewportStateCreateFlags>(depthStencilStateObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_ENABLE].GetUint());
-            pDepthStencilStateCreateInfo->maxDepthBounds = depthStencilStateObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_MAX_DEPTH_BOUNDS].GetFloat();
-            pDepthStencilStateCreateInfo->minDepthBounds = depthStencilStateObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_MIN_DEPTH_BOUNDS].GetFloat();
-            pDepthStencilStateCreateInfo->depthBoundsTestEnable = depthStencilStateObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_DEPTH_BOUNDS_TEST_ENABLE].GetUint();
-            pDepthStencilStateCreateInfo->depthWriteEnable = depthStencilStateObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_DEPTH_WRITE_ENABLE].GetUint();
-            pDepthStencilStateCreateInfo->depthTestEnable = depthStencilStateObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_DEPTH_TEST_ENABLE].GetUint();
-            pDepthStencilStateCreateInfo->depthCompareOp = static_cast<VkCompareOp>(depthStencilStateObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_DEPTH_COMPARE_OP].GetUint());
+                // Color blend attachments.
+                const auto& colorBlendAttachments = colorBlendStateObj[STR_FOSSILIZE_NODE_COLOR_BLEND_STATE_ATTACHMENTS].GetArray();
+                uint32_t colorBlendAttachmentCount = colorBlendAttachments.Size();
+                if (colorBlendAttachmentCount > 0)
+                {
+                    uint32_t colorBlendAttachmentIndex = 0;
+                    VkPipelineColorBlendAttachmentState* pColorBlendAttachement = new VkPipelineColorBlendAttachmentState[colorBlendAttachmentCount]{};
+                    for (const auto& colorBlendAttachment : colorBlendAttachments)
+                    {
+                        // Verify that the members exist.
+                        ret = (ret && colorBlendAttachment.HasMember(STR_FOSSILIZE_NODE_COLOR_BLEND_ATTACHMENT_DST_ALPHA_BLEND_FACTOR));
+                        ret = (ret && colorBlendAttachment.HasMember(STR_FOSSILIZE_NODE_COLOR_BLEND_ATTACHMENT_SRC_ALPHA_BLEND_FACTOR));
+                        ret = (ret && colorBlendAttachment.HasMember(STR_FOSSILIZE_NODE_COLOR_BLEND_ATTACHMENT_DST_COLOR_BLEND_FACTOR));
+                        ret = (ret && colorBlendAttachment.HasMember(STR_FOSSILIZE_NODE_COLOR_BLEND_ATTACHMENT_SRC_COLOR_BLEND_FACTOR));
+                        ret = (ret && colorBlendAttachment.HasMember(STR_FOSSILIZE_NODE_COLOR_BLEND_ATTACHMENT_COLOR_WRITE_MASK));
+                        ret = (ret && colorBlendAttachment.HasMember(STR_FOSSILIZE_NODE_COLOR_BLEND_ATTACHMENT_ALPHA_BLEND_OP));
+                        ret = (ret && colorBlendAttachment.HasMember(STR_FOSSILIZE_NODE_COLOR_BLEND_ATTACHMENT_COLOR_BLEND_OP));
+                        ret = (ret && colorBlendAttachment.HasMember(STR_FOSSILIZE_NODE_COLOR_BLEND_ATTACHMENT_BLEND_ENABLE));
+                        assert(ret);
 
-            // Front.
-            const auto& depthStencilFrontObj = depthStencilStateObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_FRONT].GetObject();
+                        // Verify the type.
+                        ret = (ret && colorBlendAttachment[STR_FOSSILIZE_NODE_COLOR_BLEND_ATTACHMENT_DST_ALPHA_BLEND_FACTOR].IsUint());
+                        ret = (ret && colorBlendAttachment[STR_FOSSILIZE_NODE_COLOR_BLEND_ATTACHMENT_SRC_ALPHA_BLEND_FACTOR].IsUint());
+                        ret = (ret && colorBlendAttachment[STR_FOSSILIZE_NODE_COLOR_BLEND_ATTACHMENT_DST_COLOR_BLEND_FACTOR].IsUint());
+                        ret = (ret && colorBlendAttachment[STR_FOSSILIZE_NODE_COLOR_BLEND_ATTACHMENT_SRC_COLOR_BLEND_FACTOR].IsUint());
+                        ret = (ret && colorBlendAttachment[STR_FOSSILIZE_NODE_COLOR_BLEND_ATTACHMENT_COLOR_WRITE_MASK].IsUint());
+                        ret = (ret && colorBlendAttachment[STR_FOSSILIZE_NODE_COLOR_BLEND_ATTACHMENT_ALPHA_BLEND_OP].IsUint());
+                        ret = (ret && colorBlendAttachment[STR_FOSSILIZE_NODE_COLOR_BLEND_ATTACHMENT_COLOR_BLEND_OP].IsUint());
+                        ret = (ret && colorBlendAttachment[STR_FOSSILIZE_NODE_COLOR_BLEND_ATTACHMENT_BLEND_ENABLE].IsUint());
+                        assert(ret);
 
-            // Verify that the members exist.
-            ret = (ret && depthStencilFrontObj.HasMember(STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_COMPARE_OP));
-            ret = (ret && depthStencilFrontObj.HasMember(STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_WRITE_MASK));
-            ret = (ret && depthStencilFrontObj.HasMember(STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_REFERENCE));
-            ret = (ret && depthStencilFrontObj.HasMember(STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_COMPARE_MASK));
-            ret = (ret && depthStencilFrontObj.HasMember(STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_PASS_OP));
-            ret = (ret && depthStencilFrontObj.HasMember(STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_FAIL_OP));
-            ret = (ret && depthStencilFrontObj.HasMember(STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_DEPTH_FAIL_OP));
-            assert(ret);
+                        // Fill up our structure.
+                        pColorBlendAttachement[colorBlendAttachmentIndex].dstAlphaBlendFactor = static_cast<VkBlendFactor>(colorBlendAttachment[STR_FOSSILIZE_NODE_COLOR_BLEND_ATTACHMENT_DST_ALPHA_BLEND_FACTOR].GetUint());
+                        pColorBlendAttachement[colorBlendAttachmentIndex].srcAlphaBlendFactor = static_cast<VkBlendFactor>(colorBlendAttachment[STR_FOSSILIZE_NODE_COLOR_BLEND_ATTACHMENT_SRC_ALPHA_BLEND_FACTOR].GetUint());
+                        pColorBlendAttachement[colorBlendAttachmentIndex].dstColorBlendFactor = static_cast<VkBlendFactor>(colorBlendAttachment[STR_FOSSILIZE_NODE_COLOR_BLEND_ATTACHMENT_DST_COLOR_BLEND_FACTOR].GetUint());
+                        pColorBlendAttachement[colorBlendAttachmentIndex].srcColorBlendFactor = static_cast<VkBlendFactor>(colorBlendAttachment[STR_FOSSILIZE_NODE_COLOR_BLEND_ATTACHMENT_SRC_COLOR_BLEND_FACTOR].GetUint());
+                        pColorBlendAttachement[colorBlendAttachmentIndex].colorWriteMask = static_cast<VkColorComponentFlags>(colorBlendAttachment[STR_FOSSILIZE_NODE_COLOR_BLEND_ATTACHMENT_COLOR_WRITE_MASK].GetUint());
+                        pColorBlendAttachement[colorBlendAttachmentIndex].alphaBlendOp = static_cast<VkBlendOp>(colorBlendAttachment[STR_FOSSILIZE_NODE_COLOR_BLEND_ATTACHMENT_ALPHA_BLEND_OP].GetUint());
+                        pColorBlendAttachement[colorBlendAttachmentIndex].colorBlendOp = static_cast<VkBlendOp>(colorBlendAttachment[STR_FOSSILIZE_NODE_COLOR_BLEND_ATTACHMENT_COLOR_BLEND_OP].GetUint());
+                        pColorBlendAttachement[colorBlendAttachmentIndex].blendEnable = colorBlendAttachment[STR_FOSSILIZE_NODE_COLOR_BLEND_ATTACHMENT_BLEND_ENABLE].GetUint();
 
-            // Verify the type.
-            ret = (ret && depthStencilFrontObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_COMPARE_OP].IsUint());
-            ret = (ret && depthStencilFrontObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_WRITE_MASK].IsUint());
-            ret = (ret && depthStencilFrontObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_REFERENCE].IsUint());
-            ret = (ret && depthStencilFrontObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_COMPARE_MASK].IsUint());
-            ret = (ret && depthStencilFrontObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_PASS_OP].IsUint());
-            ret = (ret && depthStencilFrontObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_FAIL_OP].IsUint());
-            ret = (ret && depthStencilFrontObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_DEPTH_FAIL_OP].IsUint());
-            assert(ret);
+                        // Move to the next item.
+                        ++colorBlendAttachmentIndex;
+                    }
 
-            // Fill up our structure.
-            pDepthStencilStateCreateInfo->front.compareOp = static_cast<VkCompareOp>(depthStencilFrontObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_COMPARE_OP].GetUint());
-            pDepthStencilStateCreateInfo->front.writeMask = depthStencilFrontObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_WRITE_MASK].GetUint();
-            pDepthStencilStateCreateInfo->front.reference = depthStencilFrontObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_REFERENCE].GetUint();
-            pDepthStencilStateCreateInfo->front.compareMask = depthStencilFrontObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_COMPARE_MASK].GetUint();
-            pDepthStencilStateCreateInfo->front.passOp = static_cast<VkStencilOp>(depthStencilFrontObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_PASS_OP].GetUint());
-            pDepthStencilStateCreateInfo->front.failOp = static_cast<VkStencilOp>(depthStencilFrontObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_FAIL_OP].GetUint());
-            pDepthStencilStateCreateInfo->front.depthFailOp = static_cast<VkStencilOp>(depthStencilFrontObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_DEPTH_FAIL_OP].GetUint());
+                    // Assign to our color blend state create info structure.
+                    pColorBlendStateCreateInfo->attachmentCount = colorBlendAttachmentCount;
+                    pColorBlendStateCreateInfo->pAttachments = pColorBlendAttachement;
 
-            // Back.
-            const auto& depthStencilBackObj = depthStencilStateObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_BACK].GetObject();
+                    // Set the relevant member in our recipe object.
+                    pGraphicsPipelineRecipe->SetColorBlendStateCreateInfo(pColorBlendStateCreateInfo);
+                }
 
-            // Verify that the members exist.
-            ret = (ret && depthStencilBackObj.HasMember(STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_COMPARE_OP));
-            ret = (ret && depthStencilBackObj.HasMember(STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_WRITE_MASK));
-            ret = (ret && depthStencilBackObj.HasMember(STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_REFERENCE));
-            ret = (ret && depthStencilBackObj.HasMember(STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_COMPARE_MASK));
-            ret = (ret && depthStencilBackObj.HasMember(STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_PASS_OP));
-            ret = (ret && depthStencilBackObj.HasMember(STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_FAIL_OP));
-            ret = (ret && depthStencilBackObj.HasMember(STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_DEPTH_FAIL_OP));
-            assert(ret);
+                // Viewport state.
+                const auto& viewportStateObj = graphicsPipeline[STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_VIEWPORT_STATE].GetObject();
+                VkPipelineViewportStateCreateInfo* pViewportState = new VkPipelineViewportStateCreateInfo{};
+                pViewportState->sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
 
-            // Verify the type.
-            ret = (ret && depthStencilBackObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_COMPARE_OP].IsUint());
-            ret = (ret && depthStencilBackObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_WRITE_MASK].IsUint());
-            ret = (ret && depthStencilBackObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_REFERENCE].IsUint());
-            ret = (ret && depthStencilBackObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_COMPARE_MASK].IsUint());
-            ret = (ret && depthStencilBackObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_PASS_OP].IsUint());
-            ret = (ret && depthStencilBackObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_FAIL_OP].IsUint());
-            ret = (ret && depthStencilBackObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_DEPTH_FAIL_OP].IsUint());
-            assert(ret);
+                // Verify that the members exist.
+                ret = (ret && viewportStateObj.HasMember(STR_FOSSILIZE_NODE_FLAGS));
+                ret = (ret && viewportStateObj.HasMember(STR_FOSSILIZE_NODE_VIEWPORT_STATE_VIEWPORT_COUNT));
+                ret = (ret && viewportStateObj.HasMember(STR_FOSSILIZE_NODE_VIEWPORT_STATE_SCISSOR_COUNT));
+                assert(ret);
 
-            // Fill up our structure.
-            pDepthStencilStateCreateInfo->back.compareOp = static_cast<VkCompareOp>(depthStencilBackObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_COMPARE_OP].GetUint());
-            pDepthStencilStateCreateInfo->back.writeMask = depthStencilBackObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_WRITE_MASK].GetUint();
-            pDepthStencilStateCreateInfo->back.reference = depthStencilBackObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_REFERENCE].GetUint();
-            pDepthStencilStateCreateInfo->back.compareMask = depthStencilBackObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_COMPARE_MASK].GetUint();
-            pDepthStencilStateCreateInfo->back.passOp = static_cast<VkStencilOp>(depthStencilBackObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_PASS_OP].GetUint());
-            pDepthStencilStateCreateInfo->back.failOp = static_cast<VkStencilOp>(depthStencilBackObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_FAIL_OP].GetUint());
-            pDepthStencilStateCreateInfo->back.depthFailOp = static_cast<VkStencilOp>(depthStencilBackObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_DEPTH_FAIL_OP].GetUint());
+                // Verify the type.
+                ret = (ret && viewportStateObj[STR_FOSSILIZE_NODE_FLAGS].IsUint());
+                ret = (ret && viewportStateObj[STR_FOSSILIZE_NODE_VIEWPORT_STATE_VIEWPORT_COUNT].IsUint());
+                ret = (ret && viewportStateObj[STR_FOSSILIZE_NODE_VIEWPORT_STATE_SCISSOR_COUNT].IsUint());
+                assert(ret);
 
-            // Add the depth stencil state to our recipe object.
-            pGraphicsPipelineRecipe->SetDepthStencilStateCreateInfo(pDepthStencilStateCreateInfo);
+                // Fill up our structure.
+                pViewportState->flags = static_cast<VkPipelineViewportStateCreateFlags>(viewportStateObj[STR_FOSSILIZE_NODE_FLAGS].GetUint());
+                pViewportState->viewportCount = viewportStateObj[STR_FOSSILIZE_NODE_VIEWPORT_STATE_VIEWPORT_COUNT].GetUint();
+                pViewportState->scissorCount = viewportStateObj[STR_FOSSILIZE_NODE_VIEWPORT_STATE_SCISSOR_COUNT].GetUint();
 
-            // Serialize our pipeline recipe.
-            std::stringstream outputFileName;
-            outputFileName << outputDirectory << "/" << STR_FILE_BASE_FILENAME_PSO << ++graphicsPipelineIndex;
+                // Set the relevant member of our recipe object.
+                pGraphicsPipelineRecipe->SetViweportStateCreateInfo(pViewportState);
 
-            std::string baseOutputFileName = outputFileName.str().c_str();
-            std::string psoOutputFileName = outputFileName.str().c_str();
-            psoOutputFileName.append(STR_FILE_EXTENSION_GRAPHICS_PSO);
+                // Depth stencil state.
+                const auto& depthStencilStateObj = graphicsPipeline[STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_DEPTH_STENCIL_STATE].GetObject();
+                VkPipelineDepthStencilStateCreateInfo* pDepthStencilStateCreateInfo = new VkPipelineDepthStencilStateCreateInfo{};
+                pDepthStencilStateCreateInfo->sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
 
-            std::string errMsg;
-            bool isGraphicsPipelineSerialized = rgPsoSerializerVulkan::WriteStructureToFile(pGraphicsPipelineRecipe, psoOutputFileName, errMsg);
-            assert(isGraphicsPipelineSerialized);
+                // Verify that the members exist.
+                ret = (ret && depthStencilStateObj.HasMember(STR_FOSSILIZE_NODE_FLAGS));
+                ret = (ret && depthStencilStateObj.HasMember(STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_ENABLE));
+                ret = (ret && depthStencilStateObj.HasMember(STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_MAX_DEPTH_BOUNDS));
+                ret = (ret && depthStencilStateObj.HasMember(STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_MIN_DEPTH_BOUNDS));
+                ret = (ret && depthStencilStateObj.HasMember(STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_DEPTH_BOUNDS_TEST_ENABLE));
+                ret = (ret && depthStencilStateObj.HasMember(STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_DEPTH_WRITE_ENABLE));
+                ret = (ret && depthStencilStateObj.HasMember(STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_DEPTH_TEST_ENABLE));
+                ret = (ret && depthStencilStateObj.HasMember(STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_DEPTH_COMPARE_OP));
+                ret = (ret && depthStencilStateObj.HasMember(STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_FRONT));
+                ret = (ret && depthStencilStateObj.HasMember(STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_BACK));
+                assert(ret);
 
-            // Add the file to the output buffer.
-            if (isGraphicsPipelineSerialized)
-            {
-                rgaPsoFiles.push_back(outputFileName.str().c_str());
+                // Verify the type.
+                ret = (ret && depthStencilStateObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_ENABLE].IsUint());
+                ret = (ret && depthStencilStateObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_MAX_DEPTH_BOUNDS].IsFloat());
+                ret = (ret && depthStencilStateObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_MIN_DEPTH_BOUNDS].IsFloat());
+                ret = (ret && depthStencilStateObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_DEPTH_BOUNDS_TEST_ENABLE].IsUint());
+                ret = (ret && depthStencilStateObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_DEPTH_WRITE_ENABLE].IsUint());
+                ret = (ret && depthStencilStateObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_DEPTH_TEST_ENABLE].IsUint());
+                ret = (ret && depthStencilStateObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_DEPTH_COMPARE_OP].IsUint());
+                ret = (ret && depthStencilStateObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_FRONT].IsObject());
+                ret = (ret && depthStencilStateObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_BACK].IsObject());
+                assert(ret);
+
+                // Fill up our structure.
+                pDepthStencilStateCreateInfo->flags = static_cast<VkPipelineViewportStateCreateFlags>(depthStencilStateObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_ENABLE].GetUint());
+                pDepthStencilStateCreateInfo->maxDepthBounds = depthStencilStateObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_MAX_DEPTH_BOUNDS].GetFloat();
+                pDepthStencilStateCreateInfo->minDepthBounds = depthStencilStateObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_MIN_DEPTH_BOUNDS].GetFloat();
+                pDepthStencilStateCreateInfo->depthBoundsTestEnable = depthStencilStateObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_DEPTH_BOUNDS_TEST_ENABLE].GetUint();
+                pDepthStencilStateCreateInfo->depthWriteEnable = depthStencilStateObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_DEPTH_WRITE_ENABLE].GetUint();
+                pDepthStencilStateCreateInfo->depthTestEnable = depthStencilStateObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_DEPTH_TEST_ENABLE].GetUint();
+                pDepthStencilStateCreateInfo->depthCompareOp = static_cast<VkCompareOp>(depthStencilStateObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_DEPTH_COMPARE_OP].GetUint());
+
+                // Front.
+                const auto& depthStencilFrontObj = depthStencilStateObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_FRONT].GetObject();
+
+                // Verify that the members exist.
+                ret = (ret && depthStencilFrontObj.HasMember(STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_COMPARE_OP));
+                ret = (ret && depthStencilFrontObj.HasMember(STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_WRITE_MASK));
+                ret = (ret && depthStencilFrontObj.HasMember(STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_REFERENCE));
+                ret = (ret && depthStencilFrontObj.HasMember(STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_COMPARE_MASK));
+                ret = (ret && depthStencilFrontObj.HasMember(STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_PASS_OP));
+                ret = (ret && depthStencilFrontObj.HasMember(STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_FAIL_OP));
+                ret = (ret && depthStencilFrontObj.HasMember(STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_DEPTH_FAIL_OP));
+                assert(ret);
+
+                // Verify the type.
+                ret = (ret && depthStencilFrontObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_COMPARE_OP].IsUint());
+                ret = (ret && depthStencilFrontObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_WRITE_MASK].IsUint());
+                ret = (ret && depthStencilFrontObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_REFERENCE].IsUint());
+                ret = (ret && depthStencilFrontObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_COMPARE_MASK].IsUint());
+                ret = (ret && depthStencilFrontObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_PASS_OP].IsUint());
+                ret = (ret && depthStencilFrontObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_FAIL_OP].IsUint());
+                ret = (ret && depthStencilFrontObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_DEPTH_FAIL_OP].IsUint());
+                assert(ret);
+
+                // Fill up our structure.
+                pDepthStencilStateCreateInfo->front.compareOp = static_cast<VkCompareOp>(depthStencilFrontObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_COMPARE_OP].GetUint());
+                pDepthStencilStateCreateInfo->front.writeMask = depthStencilFrontObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_WRITE_MASK].GetUint();
+                pDepthStencilStateCreateInfo->front.reference = depthStencilFrontObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_REFERENCE].GetUint();
+                pDepthStencilStateCreateInfo->front.compareMask = depthStencilFrontObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_COMPARE_MASK].GetUint();
+                pDepthStencilStateCreateInfo->front.passOp = static_cast<VkStencilOp>(depthStencilFrontObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_PASS_OP].GetUint());
+                pDepthStencilStateCreateInfo->front.failOp = static_cast<VkStencilOp>(depthStencilFrontObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_FAIL_OP].GetUint());
+                pDepthStencilStateCreateInfo->front.depthFailOp = static_cast<VkStencilOp>(depthStencilFrontObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_DEPTH_FAIL_OP].GetUint());
+
+                // Back.
+                const auto& depthStencilBackObj = depthStencilStateObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_BACK].GetObject();
+
+                // Verify that the members exist.
+                ret = (ret && depthStencilBackObj.HasMember(STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_COMPARE_OP));
+                ret = (ret && depthStencilBackObj.HasMember(STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_WRITE_MASK));
+                ret = (ret && depthStencilBackObj.HasMember(STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_REFERENCE));
+                ret = (ret && depthStencilBackObj.HasMember(STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_COMPARE_MASK));
+                ret = (ret && depthStencilBackObj.HasMember(STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_PASS_OP));
+                ret = (ret && depthStencilBackObj.HasMember(STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_FAIL_OP));
+                ret = (ret && depthStencilBackObj.HasMember(STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_DEPTH_FAIL_OP));
+                assert(ret);
+
+                // Verify the type.
+                ret = (ret && depthStencilBackObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_COMPARE_OP].IsUint());
+                ret = (ret && depthStencilBackObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_WRITE_MASK].IsUint());
+                ret = (ret && depthStencilBackObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_REFERENCE].IsUint());
+                ret = (ret && depthStencilBackObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_COMPARE_MASK].IsUint());
+                ret = (ret && depthStencilBackObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_PASS_OP].IsUint());
+                ret = (ret && depthStencilBackObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_FAIL_OP].IsUint());
+                ret = (ret && depthStencilBackObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_DEPTH_FAIL_OP].IsUint());
+                assert(ret);
+
+                // Fill up our structure.
+                pDepthStencilStateCreateInfo->back.compareOp = static_cast<VkCompareOp>(depthStencilBackObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_COMPARE_OP].GetUint());
+                pDepthStencilStateCreateInfo->back.writeMask = depthStencilBackObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_WRITE_MASK].GetUint();
+                pDepthStencilStateCreateInfo->back.reference = depthStencilBackObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_REFERENCE].GetUint();
+                pDepthStencilStateCreateInfo->back.compareMask = depthStencilBackObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_COMPARE_MASK].GetUint();
+                pDepthStencilStateCreateInfo->back.passOp = static_cast<VkStencilOp>(depthStencilBackObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_PASS_OP].GetUint());
+                pDepthStencilStateCreateInfo->back.failOp = static_cast<VkStencilOp>(depthStencilBackObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_FAIL_OP].GetUint());
+                pDepthStencilStateCreateInfo->back.depthFailOp = static_cast<VkStencilOp>(depthStencilBackObj[STR_FOSSILIZE_NODE_DEPTH_STENCIL_STATE_OP_STATE_DEPTH_FAIL_OP].GetUint());
+
+                // Add the depth stencil state to our recipe object.
+                pGraphicsPipelineRecipe->SetDepthStencilStateCreateInfo(pDepthStencilStateCreateInfo);
+
+                // Prepare file names for serializing our pipeline recipe.
+                std::stringstream outputFileName;
+                outputFileName << outputDirectory << "/" << STR_FILE_BASE_FILENAME_PSO << ++graphicsPipelineIndex;
+
+                // If we are in conditional mode, append the pipeline name.
+                if (!shouldSerializeAllPipelines)
+                {
+                    outputFileName << "_" << pipelineName;
+                }
+
+                std::string baseOutputFileName = outputFileName.str().c_str();
+                std::string psoOutputFileName = outputFileName.str().c_str();
+                psoOutputFileName.append(STR_FILE_EXTENSION_GRAPHICS_PSO);
 
                 // Serialize the graphics pipeline's shaders.
                 for (const auto& shaderStage : graphicsPipeline[STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_STAGES].GetArray())
@@ -1526,6 +1568,17 @@ bool rgFossilizeConverter::Convert(const rapidjson::Document& doc, const std::st
                         }
                     }
                 }
+
+                // Serialize the recipe.
+                std::string errMsg;
+                bool isGraphicsPipelineSerialized = rgPsoSerializerVulkan::WriteStructureToFile(pGraphicsPipelineRecipe, psoOutputFileName, errMsg);
+                assert(isGraphicsPipelineSerialized);
+
+                // Add the file to the output buffer.
+                if (isGraphicsPipelineSerialized)
+                {
+                    rgaPsoFiles.push_back(outputFileName.str().c_str());
+                }
             }
         }
     }
@@ -1549,131 +1602,161 @@ bool rgFossilizeConverter::Convert(const rapidjson::Document& doc, const std::st
         ret = (ret && computePipeline.HasMember(STR_FOSSILIZE_NODE_COMPUTE_PIPELINE_STAGE));
         assert(ret);
 
-        // Verify the type.
-        ret = (ret && computePipeline[STR_FOSSILIZE_NODE_HASH].IsUint64());
-        ret = (ret && computePipeline[STR_FOSSILIZE_NODE_FLAGS].IsUint());
-        ret = (ret && computePipeline[STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_BASE_PIPELINE_HANDLE].IsUint());
-        ret = (ret && computePipeline[STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_BASE_PIPELINE_INDEX].IsInt());
-        ret = (ret && computePipeline[STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_LAYOUT].IsUint());
-        ret = (ret && computePipeline[STR_FOSSILIZE_NODE_COMPUTE_PIPELINE_STAGE].IsObject());
-        assert(ret);
-
-        // Fill up our structure.
-        VkComputePipelineCreateInfo* pComputePiplineCreateInfo = pComputePipelineRecipe->GetComputePipelineCreateInfo();
-        assert(pComputePiplineCreateInfo != nullptr);
-        if (pComputePiplineCreateInfo != nullptr)
+        std::string pipelineName;
+        bool shouldSerializeCurrPipeline = true;
+        if (!shouldSerializeAllPipelines)
         {
-            pComputePiplineCreateInfo->flags = static_cast<VkFlags>(computePipeline[STR_FOSSILIZE_NODE_FLAGS].GetUint());
+            // Check if the current pipeline was requested by the user.
+            shouldSerializeCurrPipeline = false;
 
-            // @TODO: figure out what should we do with this one. Is this a handle or an internal reference within the JSON.
-            pComputePiplineCreateInfo->sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-            pComputePiplineCreateInfo->basePipelineHandle = reinterpret_cast<VkPipeline>(computePipeline[STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_BASE_PIPELINE_HANDLE].GetInt64());
-            pComputePiplineCreateInfo->basePipelineIndex = static_cast<VkFlags>(computePipeline[STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_BASE_PIPELINE_INDEX].GetInt());
-
-            // Pipeline layouts and descriptor set layouts.
-            // Get the pipeline layout index within our collection.
-            uint32_t pipelineLayoutIndex = computePipeline[STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_LAYOUT].GetUint();
-            assert(pipelineLayoutIndex <= rgaPipelineLayouts.size());
-            if (pipelineLayoutIndex > 0)
+            // Get the name of the current pipeline.
+            uint64_t pipelineHash = computePipeline[STR_FOSSILIZE_NODE_HASH].GetUint64();
+            auto iter = pipelineNames.find(pipelineHash);
+            if (iter != pipelineNames.end())
             {
-                assert(rgaPipelineLayouts[pipelineLayoutIndex - 1] != nullptr);
-                if (rgaPipelineLayouts[pipelineLayoutIndex - 1] != nullptr)
-                {
-                    VkPipelineLayoutCreateInfo* pPipelineLayoutCreateInfo = rgaPipelineLayouts[pipelineLayoutIndex - 1]->m_pVkPipelineLayoutCreateInfo;
-                    assert(pPipelineLayoutCreateInfo != nullptr);
-                    pComputePipelineRecipe->SetPipelineLayoutCreateInfo(pPipelineLayoutCreateInfo);
+                pipelineName = iter->second;
+                assert(!pipelineName.empty());
 
-                    // Add the descriptor set layout create info structures.
-                    for (size_t descriptorSetLayoutIndex : rgaPipelineLayouts[pipelineLayoutIndex - 1]->m_descriptorSetLayoutIndices)
+                // Serialize if the current pipeline was requested by the user.
+                if (!pipelineName.empty() && std::find(requiredPipelineNames.begin(),
+                    requiredPipelineNames.end(), pipelineName) != requiredPipelineNames.end())
+                {
+                    shouldSerializeCurrPipeline = true;
+                }
+            }
+        }
+
+        if (shouldSerializeCurrPipeline)
+        {
+            // Verify the type.
+            ret = (ret && computePipeline[STR_FOSSILIZE_NODE_HASH].IsUint64());
+            ret = (ret && computePipeline[STR_FOSSILIZE_NODE_FLAGS].IsUint());
+            ret = (ret && computePipeline[STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_BASE_PIPELINE_HANDLE].IsUint());
+            ret = (ret && computePipeline[STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_BASE_PIPELINE_INDEX].IsInt());
+            ret = (ret && computePipeline[STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_LAYOUT].IsUint());
+            ret = (ret && computePipeline[STR_FOSSILIZE_NODE_COMPUTE_PIPELINE_STAGE].IsObject());
+            assert(ret);
+
+            // Fill up our structure.
+            VkComputePipelineCreateInfo* pComputePiplineCreateInfo = pComputePipelineRecipe->GetComputePipelineCreateInfo();
+            assert(pComputePiplineCreateInfo != nullptr);
+            if (pComputePiplineCreateInfo != nullptr)
+            {
+                pComputePiplineCreateInfo->flags = static_cast<VkFlags>(computePipeline[STR_FOSSILIZE_NODE_FLAGS].GetUint());
+                pComputePiplineCreateInfo->sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+                pComputePiplineCreateInfo->basePipelineHandle = reinterpret_cast<VkPipeline>(computePipeline[STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_BASE_PIPELINE_HANDLE].GetInt64());
+                pComputePiplineCreateInfo->basePipelineIndex = static_cast<VkFlags>(computePipeline[STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_BASE_PIPELINE_INDEX].GetInt());
+
+                // Pipeline layouts and descriptor set layouts.
+                // Get the pipeline layout index within our collection.
+                uint32_t pipelineLayoutIndex = computePipeline[STR_FOSSILIZE_NODE_GRAPHICS_PIPELINE_LAYOUT].GetUint();
+                assert(pipelineLayoutIndex <= rgaPipelineLayouts.size());
+                if (pipelineLayoutIndex > 0)
+                {
+                    assert(rgaPipelineLayouts[pipelineLayoutIndex - 1] != nullptr);
+                    if (rgaPipelineLayouts[pipelineLayoutIndex - 1] != nullptr)
                     {
-                        assert(descriptorSetLayoutIndex <= rgaDescriptorSetLayouts.size());
-                        if (descriptorSetLayoutIndex <= rgaDescriptorSetLayouts.size())
+                        VkPipelineLayoutCreateInfo* pPipelineLayoutCreateInfo = rgaPipelineLayouts[pipelineLayoutIndex - 1]->m_pVkPipelineLayoutCreateInfo;
+                        assert(pPipelineLayoutCreateInfo != nullptr);
+                        pComputePipelineRecipe->SetPipelineLayoutCreateInfo(pPipelineLayoutCreateInfo);
+
+                        // Add the descriptor set layout create info structures.
+                        for (size_t descriptorSetLayoutIndex : rgaPipelineLayouts[pipelineLayoutIndex - 1]->m_descriptorSetLayoutIndices)
                         {
-                            pComputePipelineRecipe->AddDescriptorSetLayoutCreateInfo(rgaDescriptorSetLayouts[descriptorSetLayoutIndex - 1]);
+                            assert(descriptorSetLayoutIndex <= rgaDescriptorSetLayouts.size());
+                            if (descriptorSetLayoutIndex <= rgaDescriptorSetLayouts.size())
+                            {
+                                pComputePipelineRecipe->AddDescriptorSetLayoutCreateInfo(rgaDescriptorSetLayouts[descriptorSetLayoutIndex - 1]);
+                            }
                         }
                     }
                 }
-            }
 
-            // Serialize our pipeline recipe.
-            std::stringstream outputFileName;
-            outputFileName << outputDirectory << "/" << STR_FILE_BASE_FILENAME_PSO << ++graphicsPipelineIndex;
+                // Serialize our pipeline recipe.
+                std::stringstream outputFileName;
+                outputFileName << outputDirectory << "/" << STR_FILE_BASE_FILENAME_PSO << ++graphicsPipelineIndex;
 
-            std::string baseOutputFileName = outputFileName.str().c_str();
-            std::string psoOutputFileName = outputFileName.str().c_str();
-            psoOutputFileName.append(STR_FILE_EXTENSION_COMPUTE_PSO);
-
-            std::string errMsg;
-            bool isComputePipelineSerialized = rgPsoSerializerVulkan::WriteStructureToFile(pComputePipelineRecipe, psoOutputFileName, errMsg);
-            assert(isComputePipelineSerialized);
-
-            // Add the file to the output buffer.
-            if (isComputePipelineSerialized)
-            {
-                rgaPsoFiles.push_back(outputFileName.str().c_str());
-
-                // Serialize the compute pipeline's shader.
-                const auto& shaderStage = computePipeline[STR_FOSSILIZE_NODE_COMPUTE_PIPELINE_STAGE].GetObject();
-
-                // Verify that the members exist.
-                ret = (ret && shaderStage.HasMember(STR_FOSSILIZE_NODE_FLAGS));
-                ret = (ret && shaderStage.HasMember(STR_FOSSILIZE_NODE_PIPELINE_STAGES_NAME));
-                ret = (ret && shaderStage.HasMember(STR_FOSSILIZE_NODE_PIPELINE_STAGES_MODULE));
-                ret = (ret && shaderStage.HasMember(STR_FOSSILIZE_NODE_PIPELINE_STAGES_STAGE));
-                assert(ret);
-
-                // Verify the type.
-                ret = (ret && shaderStage[STR_FOSSILIZE_NODE_FLAGS].IsUint());
-                ret = (ret && shaderStage[STR_FOSSILIZE_NODE_PIPELINE_STAGES_NAME].IsString());
-                ret = (ret && shaderStage[STR_FOSSILIZE_NODE_PIPELINE_STAGES_MODULE].IsUint());
-                ret = (ret && shaderStage[STR_FOSSILIZE_NODE_PIPELINE_STAGES_STAGE].IsUint());
-                assert(ret);
-
-                std::string entryPointName = shaderStage[STR_FOSSILIZE_NODE_PIPELINE_STAGES_NAME].GetString();
-                uint32_t shaderModuleIndex = shaderStage[STR_FOSSILIZE_NODE_PIPELINE_STAGES_MODULE].GetUint();
-                VkShaderStageFlagBits stageFlags = static_cast<VkShaderStageFlagBits>(shaderStage[STR_FOSSILIZE_NODE_PIPELINE_STAGES_STAGE].GetUint());
-
-                // Construct the file name for the output SPIR-V file.
-                std::stringstream spirvFileName;
-                spirvFileName << baseOutputFileName << "_";
-
-                // Append the stage name.
-                switch (stageFlags)
+                // If we are in conditional mode, append the pipeline name.
+                if (!shouldSerializeAllPipelines)
                 {
-                case VK_SHADER_STAGE_COMPUTE_BIT:
-                    spirvFileName << "comp";
-                    break;
-
-                // The following are invalid for a compute pipeline.
-                case VK_SHADER_STAGE_VERTEX_BIT:
-                case VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT:
-                case VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT:
-                case VK_SHADER_STAGE_GEOMETRY_BIT:
-                case VK_SHADER_STAGE_FRAGMENT_BIT:
-                case VK_SHADER_STAGE_ALL_GRAPHICS:
-                case VK_SHADER_STAGE_ALL:
-                default:
-                    // Unknown shader stage.
-                    assert(false);
-                    break;
+                    outputFileName << "_" << pipelineName;
                 }
+                std::string baseOutputFileName = outputFileName.str().c_str();
+                std::string psoOutputFileName = outputFileName.str().c_str();
+                psoOutputFileName.append(STR_FILE_EXTENSION_COMPUTE_PSO);
 
-                // Append the entry point name.
-                spirvFileName << "_" << entryPointName;
+                std::string errMsg;
+                bool isComputePipelineSerialized = rgPsoSerializerVulkan::WriteStructureToFile(pComputePipelineRecipe, psoOutputFileName, errMsg);
+                assert(isComputePipelineSerialized);
 
-                // Append the extension.
-                spirvFileName << STR_FILE_EXTENSION_SPIRV;
-
-                // Locate the shader module in the map and serialize.
-                assert(shaderModuleIndex <= shaderModules.size());
-                if (shaderModuleIndex <= shaderModules.size())
+                // Add the file to the output buffer.
+                if (isComputePipelineSerialized)
                 {
-                    auto iter = shaderModules.find(shaderModuleIndex - 1);
-                    assert(iter != shaderModules.end());
-                    if (iter != shaderModules.end())
+                    rgaPsoFiles.push_back(outputFileName.str().c_str());
+
+                    // Serialize the compute pipeline's shader.
+                    const auto& shaderStage = computePipeline[STR_FOSSILIZE_NODE_COMPUTE_PIPELINE_STAGE].GetObject();
+
+                    // Verify that the members exist.
+                    ret = (ret && shaderStage.HasMember(STR_FOSSILIZE_NODE_FLAGS));
+                    ret = (ret && shaderStage.HasMember(STR_FOSSILIZE_NODE_PIPELINE_STAGES_NAME));
+                    ret = (ret && shaderStage.HasMember(STR_FOSSILIZE_NODE_PIPELINE_STAGES_MODULE));
+                    ret = (ret && shaderStage.HasMember(STR_FOSSILIZE_NODE_PIPELINE_STAGES_STAGE));
+                    assert(ret);
+
+                    // Verify the type.
+                    ret = (ret && shaderStage[STR_FOSSILIZE_NODE_FLAGS].IsUint());
+                    ret = (ret && shaderStage[STR_FOSSILIZE_NODE_PIPELINE_STAGES_NAME].IsString());
+                    ret = (ret && shaderStage[STR_FOSSILIZE_NODE_PIPELINE_STAGES_MODULE].IsUint());
+                    ret = (ret && shaderStage[STR_FOSSILIZE_NODE_PIPELINE_STAGES_STAGE].IsUint());
+                    assert(ret);
+
+                    std::string entryPointName = shaderStage[STR_FOSSILIZE_NODE_PIPELINE_STAGES_NAME].GetString();
+                    uint32_t shaderModuleIndex = shaderStage[STR_FOSSILIZE_NODE_PIPELINE_STAGES_MODULE].GetUint();
+                    VkShaderStageFlagBits stageFlags = static_cast<VkShaderStageFlagBits>(shaderStage[STR_FOSSILIZE_NODE_PIPELINE_STAGES_STAGE].GetUint());
+
+                    // Construct the file name for the output SPIR-V file.
+                    std::stringstream spirvFileName;
+                    spirvFileName << baseOutputFileName << "_";
+
+                    // Append the stage name.
+                    switch (stageFlags)
                     {
-                        // Save the binary SPIR-V data to the disk.
-                        WriteBinaryFile(spirvFileName.str(), iter->second.pCode, iter->second.codeSize);
+                    case VK_SHADER_STAGE_COMPUTE_BIT:
+                        spirvFileName << "comp";
+                        break;
+
+                        // The following are invalid for a compute pipeline.
+                    case VK_SHADER_STAGE_VERTEX_BIT:
+                    case VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT:
+                    case VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT:
+                    case VK_SHADER_STAGE_GEOMETRY_BIT:
+                    case VK_SHADER_STAGE_FRAGMENT_BIT:
+                    case VK_SHADER_STAGE_ALL_GRAPHICS:
+                    case VK_SHADER_STAGE_ALL:
+                    default:
+                        // Unknown shader stage.
+                        assert(false);
+                        break;
+                    }
+
+                    // Append the entry point name.
+                    spirvFileName << "_" << entryPointName;
+
+                    // Append the extension.
+                    spirvFileName << STR_FILE_EXTENSION_SPIRV;
+
+                    // Locate the shader module in the map and serialize.
+                    assert(shaderModuleIndex <= shaderModules.size());
+                    if (shaderModuleIndex <= shaderModules.size())
+                    {
+                        auto iter = shaderModules.find(shaderModuleIndex - 1);
+                        assert(iter != shaderModules.end());
+                        if (iter != shaderModules.end())
+                        {
+                            // Save the binary SPIR-V data to the disk.
+                            WriteBinaryFile(spirvFileName.str(), iter->second.pCode, iter->second.codeSize);
+                        }
                     }
                 }
             }

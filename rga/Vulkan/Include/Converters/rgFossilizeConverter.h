@@ -14,7 +14,7 @@ public:
     // Converts a single fossilize JSON file to one or more multiple RGA PSO files.
     // Returns true for success, false otherwise.
     static bool Convert(const rapidjson::Document& doc, const std::string& outputDirectory, bool isLogEnabled,
-        const std::map<uint32_t, VkShaderModuleCreateInfo>& shaderModules, std::vector<std::string>& rgaPsoFiles);
+        const std::map<uint32_t, VkShaderModuleCreateInfo>& shaderModules, std::vector<std::string>& rgaPsoFiles, const std::map<uint64_t, std::string>& pipelineNames);
 
 private:
     rgFossilizeConverter() = delete;

@@ -175,10 +175,11 @@ static VKAPI_ATTR VkResult VKAPI_CALL CreateGraphicsPipelines(VkDevice device, V
 	{
 		bool registerHandle = false;
 		unsigned index;
+        Fossilize::Hash pipelineHash = 0;
 		try
 		{
-			index = layer->getRecorder().register_graphics_pipeline(
-					Hashing::compute_hash_graphics_pipeline(layer->getRecorder(), pCreateInfos[i]), pCreateInfos[i]);
+            pipelineHash = Hashing::compute_hash_graphics_pipeline(layer->getRecorder(), pCreateInfos[i]);
+			index = layer->getRecorder().register_graphics_pipeline(pipelineHash, pCreateInfos[i]);
 			registerHandle = true;
 		}
 		catch (const std::exception &e)
@@ -191,6 +192,14 @@ static VKAPI_ATTR VkResult VKAPI_CALL CreateGraphicsPipelines(VkDevice device, V
 			layer->serializeToPath(layer->getSerializationPath());
 
 		auto res = createGraphicsPipeline(layer, pipelineCache, &pCreateInfos[i], pAllocator, &pPipelines[i]);
+
+        // If valid, track the hash for this pipeline (this mapping
+        // will only be used until this pipeline is being named).
+        if (pipelineHash != 0)
+        {
+            Fossilize::StateRecorder& recorder = layer->getRecorder();
+            recorder.set_pipeline_hash(pPipelines[i], pipelineHash);
+        }
 
 		if (res != VK_SUCCESS)
 		{
@@ -220,10 +229,11 @@ static VKAPI_ATTR VkResult VKAPI_CALL CreateComputePipelines(VkDevice device, Vk
 	{
 		bool registerHandle = false;
 		unsigned index;
+        Fossilize::Hash pipelineHash = 0;
 		try
 		{
-			index = layer->getRecorder().register_compute_pipeline(
-					Hashing::compute_hash_compute_pipeline(layer->getRecorder(), pCreateInfos[i]), pCreateInfos[i]);
+            pipelineHash = Hashing::compute_hash_compute_pipeline(layer->getRecorder(), pCreateInfos[i]);
+			index = layer->getRecorder().register_compute_pipeline(pipelineHash, pCreateInfos[i]);
 			registerHandle = true;
 		}
 		catch (const std::exception &e)
@@ -237,6 +247,14 @@ static VKAPI_ATTR VkResult VKAPI_CALL CreateComputePipelines(VkDevice device, Vk
 		pPipelines[i] = VK_NULL_HANDLE;
 
 		auto res = createComputePipeline(layer, pipelineCache, &pCreateInfos[i], pAllocator, &pPipelines[i]);
+
+        // If valid, track the hash for this pipeline (this mapping
+        // will only be used until this pipeline is being named).
+        if (pipelineHash != 0)
+        {
+            Fossilize::StateRecorder& recorder = layer->getRecorder();
+            recorder.set_pipeline_hash(pPipelines[i], pipelineHash);
+        }
 
 		if (res != VK_SUCCESS)
 		{
@@ -429,6 +447,38 @@ static VKAPI_ATTR VkResult VKAPI_CALL CreateRenderPass(VkDevice device, const Vk
 	return res;
 }
 
+// Proxy for DebugMarkerSetObjectNameEXT to track object names.
+static VKAPI_ATTR VkResult VKAPI_CALL DebugMarkerSetObjectNameEXT(VkDevice device, const VkDebugMarkerObjectNameInfoEXT *pNameInfo)
+{
+    lock_guard<mutex> holder{ globalLock };
+
+    void *key = getDispatchKey(device);
+    auto *layer = getLayerData(key, deviceData);
+
+    // Track the name of the object.
+    if (pNameInfo != nullptr && pNameInfo->objectType == VK_DEBUG_REPORT_OBJECT_TYPE_PIPELINE_EXT &&
+        pNameInfo->pObjectName != nullptr)
+    {
+        Fossilize::StateRecorder& recorder = layer->getRecorder();
+        Fossilize::Hash pipelineHash = 0;
+        bool isValid = recorder.get_pipeline_hash((VkPipeline)pNameInfo->object, pipelineHash);
+        if (isValid)
+        {
+            recorder.set_pipeline_name(pipelineHash, pNameInfo->pObjectName);
+        }
+    }
+
+    // Call the actual function, if present.
+    VkResult res = VK_SUCCESS;
+    auto *pfn = layer->getTable()->DebugMarkerSetObjectNameEXT;
+    if (pfn != nullptr)
+    {
+        res = pfn(device, pNameInfo);
+    }
+    return res;
+}
+
+
 static PFN_vkVoidFunction interceptCoreDeviceCommand(const char *pName)
 {
 	static const struct
@@ -446,6 +496,9 @@ static PFN_vkVoidFunction interceptCoreDeviceCommand(const char *pName)
 		{ "vkCreateSampler", reinterpret_cast<PFN_vkVoidFunction>(CreateSampler) },
 		{ "vkCreateShaderModule", reinterpret_cast<PFN_vkVoidFunction>(CreateShaderModule) },
 		{ "vkCreateRenderPass", reinterpret_cast<PFN_vkVoidFunction>(CreateRenderPass) },
+
+        // VK_EXT_debug_marker extension.
+        { "vkDebugMarkerSetObjectNameEXT", reinterpret_cast<PFN_vkVoidFunction>(DebugMarkerSetObjectNameEXT) },
 	};
 
 	for (auto &cmd : coreDeviceCommands)
