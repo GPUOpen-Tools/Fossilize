@@ -13,8 +13,27 @@
 static const char* STR_ERR_FAILED_TO_WRITE_FILE = "Error: failed to open file for writing: ";
 static const char* STR_ERR_FAILED_TO_READ_FILE = "Error: failed to open file for reading: ";
 static const char* STR_ERR_FAILED_TO_LOAD_PIPELINE_TYPE_MISMATCH = "The file's pipeline type does not match the project's pipeline type.";
+static const char* STR_ERR_FAILED_TO_READ_PIPELINE_VERSION = "The pipeline file version is unknown and cannot be loaded.";
+static const char* STR_ERR_FAILED_UNSUPPORTED_VERSION = "The pipeline file version is unrecognized.";
+
+// A version enumeration used to specify the revision of the pipeline file schema.
+enum class rgPipelineModelVersion
+{
+    // An unknown/unrecognized file version.
+    Unknown,
+
+    // The initial version of the pipeline model. Majority of pipeline structures are serialized.
+    VERSION_1_0,
+
+    // This version resolves a failure in reading & writing VkStencilOpState's 'failOp' member.
+    VERSION_1_1,
+};
+
+// This declaration is used to specify the current schema revision for the pipeline state file.
+static const rgPipelineModelVersion s_CURRENT_PIPELINE_VERSION = rgPipelineModelVersion::VERSION_1_1;
 
 // Pipeline CreateInfo member name string constants.
+static const char* STR_PIPELINE_MODEL_VERSION                           = "version";
 static const char* STR_MEMBER_VALUE_TRUE                                = "true";
 static const char* STR_MEMBER_VALUE_FALSE                               = "false";
 static const char* STR_MEMBER_NAME_TYPE                                 = "sType";
@@ -67,6 +86,7 @@ static const char* STR_MEMBER_NAME_MIN_SAMPLE_SHADING                   = "minSa
 static const char* STR_MEMBER_NAME_P_SAMPLE_MASK                        = "pSampleMask";
 static const char* STR_MEMBER_NAME_ALPHA_TO_COVERAGE_ENABLE             = "alphaToCoverageEnable";
 static const char* STR_MEMBER_NAME_ALPHA_TO_ONE_ENABLE                  = "alphaToOneEnable";
+static const char* STR_MEMBER_NAME_FAIL_OP                              = "failOp";
 static const char* STR_MEMBER_NAME_PASS_OP                              = "passOp";
 static const char* STR_MEMBER_NAME_DEPTH_FAIL_OP                        = "depthFailOp";
 static const char* STR_MEMBER_NAME_COMPARE_OP                           = "compareOp";
@@ -160,47 +180,51 @@ static const char* STR_MEMBER_NAME_VK_PIPELINE_LAYOUT_CREATE_INFO       = "VkPip
 static const char* STR_MEMBER_NAME_VK_DESCRIPTOR_SET_LAYOUT_CREATE_INFO = "VkDescriptorSetLayoutCreateInfo";
 static const char* STR_MEMBER_NAME_VK_COMPUTE_PIPELINE_CREATE_INFO      = "VkComputePipelineCreateInfo";
 
-class rgPsoSerializerVulkanImpl
+VkBool32 ReadBool(const nlohmann::json& file)
+{
+    bool isTrue = (file == STR_MEMBER_VALUE_TRUE);
+    return isTrue ? VK_TRUE : VK_FALSE;
+}
+
+const char* WriteBool(VkBool32 val)
+{
+    return (val == VK_TRUE) ? STR_MEMBER_VALUE_TRUE : STR_MEMBER_VALUE_FALSE;
+}
+
+void* ReadHandle(const nlohmann::json& file)
+{
+    std::string handleHexString = file;
+    handleHexString = handleHexString.substr(2);
+
+    size_t addr = std::strtoull(handleHexString.c_str(), nullptr, 16);
+    return (void*)addr;
+}
+
+bool IsCreateInfoExists(const nlohmann::json& file, const std::string& name)
+{
+    bool res = false;
+
+    auto result = file.find(name);
+    if (result != file.end())
+    {
+        if (file[name] != nullptr)
+        {
+            res = true;
+        }
+    }
+
+    return res;
+}
+
+// The RGA Vulkan pipeline state serializer base class. This class handles serializing full create
+// info for a graphics/compute pipeline, descriptor sets, pipeline layout, and render pass.
+class rgPsoSerializerVulkanImpl_Version_1_0
 {
 public:
-    static VkBool32 ReadBool(const nlohmann::json& file)
-    {
-        bool isTrue = (file == STR_MEMBER_VALUE_TRUE);
-        return isTrue ? VK_TRUE : VK_FALSE;
-    }
+    rgPsoSerializerVulkanImpl_Version_1_0() = default;
+    virtual ~rgPsoSerializerVulkanImpl_Version_1_0() = default;
 
-    static const char* WriteBool(VkBool32 val)
-    {
-        return (val == VK_TRUE) ? STR_MEMBER_VALUE_TRUE : STR_MEMBER_VALUE_FALSE;
-    }
-
-    static void* ReadHandle(const nlohmann::json& file)
-    {
-        std::string handleHexString = file;
-        handleHexString = handleHexString.substr(2);
-
-        char* end;
-        size_t addr = std::strtoull(handleHexString.c_str(), &end, 16);
-        return (void*)addr;
-    }
-
-    static bool IsCreateInfoExists(const nlohmann::json& file, const std::string& name)
-    {
-        bool res = false;
-
-        auto result = file.find(name);
-        if (result != file.end())
-        {
-            if (file[name] != nullptr)
-            {
-                res = true;
-            }
-        }
-
-        return res;
-    }
-
-    static void ReadGraphicsPipelineCreateInfoStructure(rgPsoGraphicsVulkan* pCreateInfo, const nlohmann::json& file)
+    void ReadGraphicsPipelineCreateInfoStructure(rgPsoGraphicsVulkan* pCreateInfo, const nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -303,7 +327,7 @@ public:
         }
     }
 
-    static void WriteStructure(const VkGraphicsPipelineCreateInfo* pCreateInfo, nlohmann::json& file)
+    void WriteStructure(const VkGraphicsPipelineCreateInfo* pCreateInfo, nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -381,7 +405,7 @@ public:
         }
     }
 
-    static void WriteStructure(const VkPipelineShaderStageCreateInfo* pCreateInfo, nlohmann::json& file)
+    void WriteStructure(const VkPipelineShaderStageCreateInfo* pCreateInfo, nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -404,7 +428,7 @@ public:
         }
     }
 
-    static void ReadStructure(VkPipelineShaderStageCreateInfo* pCreateInfo, const nlohmann::json& file)
+    void ReadStructure(VkPipelineShaderStageCreateInfo* pCreateInfo, const nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -432,7 +456,7 @@ public:
         }
     }
 
-    static std::string WriteHandle(uint64_t handle)
+    std::string WriteHandle(uint64_t handle)
     {
         const size_t bufferSize = 1024;
         char buffer[bufferSize];
@@ -440,7 +464,7 @@ public:
         return std::string(buffer);
     }
 
-    static void WriteStructure(const VkPipelineVertexInputStateCreateInfo* pCreateInfo, nlohmann::json& file)
+    void WriteStructure(const VkPipelineVertexInputStateCreateInfo* pCreateInfo, nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -461,7 +485,7 @@ public:
         }
     }
 
-    static void ReadStructure(VkPipelineVertexInputStateCreateInfo* pCreateInfo, const nlohmann::json& file)
+    void ReadStructure(VkPipelineVertexInputStateCreateInfo* pCreateInfo, const nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -497,7 +521,7 @@ public:
         }
     }
 
-    static void WriteStructure(const VkPipelineInputAssemblyStateCreateInfo* pCreateInfo, nlohmann::json& file)
+    void WriteStructure(const VkPipelineInputAssemblyStateCreateInfo* pCreateInfo, nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -510,7 +534,7 @@ public:
         }
     }
 
-    static void ReadStructure(VkPipelineInputAssemblyStateCreateInfo* pCreateInfo, const nlohmann::json& file)
+    void ReadStructure(VkPipelineInputAssemblyStateCreateInfo* pCreateInfo, const nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -523,7 +547,7 @@ public:
         }
     }
 
-    static void WriteStructure(const VkPipelineTessellationStateCreateInfo* pCreateInfo, nlohmann::json& file)
+    void WriteStructure(const VkPipelineTessellationStateCreateInfo* pCreateInfo, nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -535,7 +559,7 @@ public:
         }
     }
 
-    static void ReadStructure(VkPipelineTessellationStateCreateInfo* pCreateInfo, const nlohmann::json& file)
+    void ReadStructure(VkPipelineTessellationStateCreateInfo* pCreateInfo, const nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -547,7 +571,7 @@ public:
         }
     }
 
-    static void WriteStructure(const VkPipelineViewportStateCreateInfo* pCreateInfo, nlohmann::json& file)
+    void WriteStructure(const VkPipelineViewportStateCreateInfo* pCreateInfo, nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -575,7 +599,7 @@ public:
         }
     }
 
-    static void ReadStructure(VkPipelineViewportStateCreateInfo* pCreateInfo, const nlohmann::json& file)
+    void ReadStructure(VkPipelineViewportStateCreateInfo* pCreateInfo, const nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -639,7 +663,7 @@ public:
         }
     }
 
-    static void WriteStructure(const VkPipelineRasterizationStateCreateInfo* pCreateInfo, nlohmann::json& file)
+    void WriteStructure(const VkPipelineRasterizationStateCreateInfo* pCreateInfo, nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -660,7 +684,7 @@ public:
         }
     }
 
-    static void ReadStructure(VkPipelineRasterizationStateCreateInfo* pCreateInfo, const nlohmann::json& file)
+    void ReadStructure(VkPipelineRasterizationStateCreateInfo* pCreateInfo, const nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -681,7 +705,7 @@ public:
         }
     }
 
-    static void WriteStructure(const VkPipelineMultisampleStateCreateInfo* pCreateInfo, nlohmann::json& file)
+    void WriteStructure(const VkPipelineMultisampleStateCreateInfo* pCreateInfo, nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -704,7 +728,7 @@ public:
         }
     }
 
-    static void ReadStructure(VkPipelineMultisampleStateCreateInfo* pCreateInfo, const nlohmann::json& file)
+    void ReadStructure(VkPipelineMultisampleStateCreateInfo* pCreateInfo, const nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -732,7 +756,7 @@ public:
         }
     }
 
-    static void WriteStructure(const VkStencilOpState* pCreateInfo, nlohmann::json& file)
+    virtual void WriteStructure(const VkStencilOpState* pCreateInfo, nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -746,7 +770,7 @@ public:
         }
     }
 
-    static void ReadStructure(VkStencilOpState* pCreateInfo, const nlohmann::json& file)
+    virtual void ReadStructure(VkStencilOpState* pCreateInfo, const nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -760,7 +784,7 @@ public:
         }
     }
 
-    static void WriteStructure(const VkPipelineDepthStencilStateCreateInfo* pCreateInfo, nlohmann::json& file)
+    void WriteStructure(const VkPipelineDepthStencilStateCreateInfo* pCreateInfo, nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -780,7 +804,7 @@ public:
         }
     }
 
-    static void ReadStructure(VkPipelineDepthStencilStateCreateInfo* pCreateInfo, const nlohmann::json& file)
+    void ReadStructure(VkPipelineDepthStencilStateCreateInfo* pCreateInfo, const nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -801,7 +825,7 @@ public:
         }
     }
 
-    static void WriteStructure(const VkPipelineColorBlendAttachmentState* pCreateInfo, nlohmann::json& file)
+    void WriteStructure(const VkPipelineColorBlendAttachmentState* pCreateInfo, nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -817,7 +841,7 @@ public:
         }
     }
 
-    static void ReadStructure(VkPipelineColorBlendAttachmentState* pCreateInfo, const nlohmann::json& file)
+    void ReadStructure(VkPipelineColorBlendAttachmentState* pCreateInfo, const nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -833,7 +857,7 @@ public:
         }
     }
 
-    static void WriteStructure(const VkPipelineColorBlendStateCreateInfo* pCreateInfo, nlohmann::json& file)
+    void WriteStructure(const VkPipelineColorBlendStateCreateInfo* pCreateInfo, nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -855,7 +879,7 @@ public:
         }
     }
 
-    static void ReadStructure(VkPipelineColorBlendStateCreateInfo* pCreateInfo, const nlohmann::json& file)
+    void ReadStructure(VkPipelineColorBlendStateCreateInfo* pCreateInfo, const nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -885,7 +909,7 @@ public:
         }
     }
 
-    static void WriteStructure(const VkPipelineDynamicStateCreateInfo* pCreateInfo, nlohmann::json& file)
+    void WriteStructure(const VkPipelineDynamicStateCreateInfo* pCreateInfo, nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -902,7 +926,7 @@ public:
         }
     }
 
-    static void ReadStructure(VkPipelineDynamicStateCreateInfo* pCreateInfo, const nlohmann::json& file)
+    void ReadStructure(VkPipelineDynamicStateCreateInfo* pCreateInfo, const nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -925,7 +949,7 @@ public:
         }
     }
 
-    static void WriteStructure(const VkSpecializationInfo* pCreateInfo, nlohmann::json& file)
+    void WriteStructure(const VkSpecializationInfo* pCreateInfo, nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -946,7 +970,7 @@ public:
         }
     }
 
-    static void ReadStructure(VkSpecializationInfo* pCreateInfo, const nlohmann::json& file)
+    void ReadStructure(VkSpecializationInfo* pCreateInfo, const nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -976,7 +1000,7 @@ public:
         }
     }
 
-    static void WriteStructure(const VkVertexInputBindingDescription* pCreateInfo, nlohmann::json& file)
+    void WriteStructure(const VkVertexInputBindingDescription* pCreateInfo, nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -987,7 +1011,7 @@ public:
         }
     }
 
-    static void ReadStructure(VkVertexInputBindingDescription* pCreateInfo, const nlohmann::json& file)
+    void ReadStructure(VkVertexInputBindingDescription* pCreateInfo, const nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -998,7 +1022,7 @@ public:
         }
     }
 
-    static void WriteStructure(const VkSpecializationMapEntry* pCreateInfo, nlohmann::json& file)
+    void WriteStructure(const VkSpecializationMapEntry* pCreateInfo, nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -1009,7 +1033,7 @@ public:
         }
     }
 
-    static void ReadStructure(VkSpecializationMapEntry* pCreateInfo, const nlohmann::json& file)
+    void ReadStructure(VkSpecializationMapEntry* pCreateInfo, const nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -1020,7 +1044,7 @@ public:
         }
     }
 
-    static void WriteStructure(const VkVertexInputAttributeDescription* pCreateInfo, nlohmann::json& file)
+    void WriteStructure(const VkVertexInputAttributeDescription* pCreateInfo, nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -1032,7 +1056,7 @@ public:
         }
     }
 
-    static void ReadStructure(VkVertexInputAttributeDescription* pCreateInfo, const nlohmann::json& file)
+    void ReadStructure(VkVertexInputAttributeDescription* pCreateInfo, const nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -1044,7 +1068,7 @@ public:
         }
     }
 
-    static void WriteStructure(const VkViewport* pCreateInfo, nlohmann::json& file)
+    void WriteStructure(const VkViewport* pCreateInfo, nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -1058,7 +1082,7 @@ public:
         }
     }
 
-    static void ReadStructure(VkViewport* pCreateInfo, const nlohmann::json& file)
+    void ReadStructure(VkViewport* pCreateInfo, const nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -1072,7 +1096,7 @@ public:
         }
     }
 
-    static void WriteStructure(const VkRect2D* pCreateInfo, nlohmann::json& file)
+    void WriteStructure(const VkRect2D* pCreateInfo, nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -1082,7 +1106,7 @@ public:
         }
     }
 
-    static void ReadStructure(VkRect2D* pCreateInfo, const nlohmann::json& file)
+    void ReadStructure(VkRect2D* pCreateInfo, const nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -1092,7 +1116,7 @@ public:
         }
     }
 
-    static void WriteStructure(const VkOffset2D* pCreateInfo, nlohmann::json& file)
+    void WriteStructure(const VkOffset2D* pCreateInfo, nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -1102,7 +1126,7 @@ public:
         }
     }
 
-    static void ReadStructure(VkOffset2D* pCreateInfo, const nlohmann::json& file)
+    void ReadStructure(VkOffset2D* pCreateInfo, const nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -1112,7 +1136,7 @@ public:
         }
     }
 
-    static void WriteStructure(const VkExtent2D* pCreateInfo, nlohmann::json& file)
+    void WriteStructure(const VkExtent2D* pCreateInfo, nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -1122,7 +1146,7 @@ public:
         }
     }
 
-    static void ReadStructure(VkExtent2D* pCreateInfo, const nlohmann::json& file)
+    void ReadStructure(VkExtent2D* pCreateInfo, const nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -1132,7 +1156,7 @@ public:
         }
     }
 
-    static void WriteStructure(const VkComputePipelineCreateInfo* pCreateInfo, nlohmann::json& file)
+    void WriteStructure(const VkComputePipelineCreateInfo* pCreateInfo, nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -1155,7 +1179,7 @@ public:
         }
     }
 
-    static void ReadStructure(VkComputePipelineCreateInfo* pCreateInfo, const nlohmann::json& file)
+    void ReadStructure(VkComputePipelineCreateInfo* pCreateInfo, const nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -1178,7 +1202,7 @@ public:
         }
     }
 
-    static void WriteStructure(const VkPipelineLayoutCreateInfo* pCreateInfo, nlohmann::json& file)
+    void WriteStructure(const VkPipelineLayoutCreateInfo* pCreateInfo, nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -1204,7 +1228,7 @@ public:
         }
     }
 
-    static void ReadStructure(VkPipelineLayoutCreateInfo* pCreateInfo, const nlohmann::json& file)
+    void ReadStructure(VkPipelineLayoutCreateInfo* pCreateInfo, const nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -1239,7 +1263,7 @@ public:
         }
     }
 
-    static void WriteStructure(const VkShaderModuleCreateInfo* pCreateInfo, nlohmann::json& file)
+    void WriteStructure(const VkShaderModuleCreateInfo* pCreateInfo, nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -1251,7 +1275,7 @@ public:
         }
     }
 
-    static void ReadStructure(VkShaderModuleCreateInfo* pCreateInfo, const nlohmann::json& file)
+    void ReadStructure(VkShaderModuleCreateInfo* pCreateInfo, const nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -1263,7 +1287,7 @@ public:
         }
     }
 
-    static void WriteStructure(const VkDescriptorSetLayoutCreateInfo* pCreateInfo, nlohmann::json& file)
+    void WriteStructure(const VkDescriptorSetLayoutCreateInfo* pCreateInfo, nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -1280,7 +1304,7 @@ public:
         }
     }
 
-    static void ReadStructure(VkDescriptorSetLayoutCreateInfo* pCreateInfo, const nlohmann::json& file)
+    void ReadStructure(VkDescriptorSetLayoutCreateInfo* pCreateInfo, const nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -1303,7 +1327,7 @@ public:
         }
     }
 
-    static void WriteStructure(const VkDescriptorSetLayoutBinding* pCreateInfo, nlohmann::json& file)
+    void WriteStructure(const VkDescriptorSetLayoutBinding* pCreateInfo, nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -1316,7 +1340,7 @@ public:
         }
     }
 
-    static void ReadStructure(VkDescriptorSetLayoutBinding* pCreateInfo, const nlohmann::json& file)
+    void ReadStructure(VkDescriptorSetLayoutBinding* pCreateInfo, const nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -1328,7 +1352,7 @@ public:
         }
     }
 
-    static void WriteStructure(const VkPushConstantRange* pCreateInfo, nlohmann::json& file)
+    void WriteStructure(const VkPushConstantRange* pCreateInfo, nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -1339,7 +1363,7 @@ public:
         }
     }
 
-    static void ReadStructure(VkPushConstantRange* pCreateInfo, const nlohmann::json& file)
+    void ReadStructure(VkPushConstantRange* pCreateInfo, const nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -1350,7 +1374,7 @@ public:
         }
     }
 
-    static void WriteStructure(const VkRenderPassCreateInfo* pCreateInfo, nlohmann::json& file)
+    void WriteStructure(const VkRenderPassCreateInfo* pCreateInfo, nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -1379,7 +1403,7 @@ public:
         }
     }
 
-    static void ReadStructure(VkRenderPassCreateInfo* pCreateInfo, const nlohmann::json& file)
+    void ReadStructure(VkRenderPassCreateInfo* pCreateInfo, const nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -1426,7 +1450,7 @@ public:
         }
     }
 
-    static void WriteStructure(const VkAttachmentDescription* pCreateInfo, nlohmann::json& file)
+    void WriteStructure(const VkAttachmentDescription* pCreateInfo, nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -1443,7 +1467,7 @@ public:
         }
     }
 
-    static void ReadStructure(VkAttachmentDescription* pCreateInfo, const nlohmann::json& file)
+    void ReadStructure(VkAttachmentDescription* pCreateInfo, const nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -1460,7 +1484,7 @@ public:
         }
     }
 
-    static void WriteStructure(const VkSubpassDescription* pCreateInfo, nlohmann::json& file)
+    void WriteStructure(const VkSubpassDescription* pCreateInfo, nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -1495,7 +1519,7 @@ public:
         }
     }
 
-    static void ReadStructure(VkSubpassDescription* pCreateInfo, const nlohmann::json& file)
+    void ReadStructure(VkSubpassDescription* pCreateInfo, const nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -1561,7 +1585,7 @@ public:
         }
     }
 
-    static void WriteStructure(const VkSubpassDependency* pCreateInfo, nlohmann::json& file)
+    void WriteStructure(const VkSubpassDependency* pCreateInfo, nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -1576,7 +1600,7 @@ public:
         }
     }
 
-    static void ReadStructure(VkSubpassDependency* pCreateInfo, const nlohmann::json& file)
+    void ReadStructure(VkSubpassDependency* pCreateInfo, const nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -1591,7 +1615,7 @@ public:
         }
     }
 
-    static void WriteStructure(const VkAttachmentReference* pCreateInfo, nlohmann::json& file)
+    void WriteStructure(const VkAttachmentReference* pCreateInfo, nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -1601,7 +1625,7 @@ public:
         }
     }
 
-    static void ReadStructure(VkAttachmentReference* pCreateInfo, const nlohmann::json& file)
+    void ReadStructure(VkAttachmentReference* pCreateInfo, const nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -1611,7 +1635,7 @@ public:
         }
     }
 
-    static void ReadDescriptorSetLayoutCreateInfoArray(rgPsoCreateInfoVulkan* pCreateInfo, const nlohmann::json& file)
+    void ReadDescriptorSetLayoutCreateInfoArray(rgPsoCreateInfoVulkan* pCreateInfo, const nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -1646,7 +1670,7 @@ public:
         }
     }
 
-    static void WriteDescriptorSetLayoutCreateInfoArray(rgPsoCreateInfoVulkan* pCreateInfo, nlohmann::json& file)
+    void WriteDescriptorSetLayoutCreateInfoArray(rgPsoCreateInfoVulkan* pCreateInfo, nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -1665,7 +1689,7 @@ public:
         }
     }
 
-    static bool ReadStructure(rgPsoGraphicsVulkan* pCreateInfo, const nlohmann::json& file)
+    bool ReadStructure(rgPsoGraphicsVulkan* pCreateInfo, const nlohmann::json& file)
     {
         bool isLoaded = false;
 
@@ -1706,7 +1730,7 @@ public:
         return isLoaded;
     }
 
-    static bool ReadStructure(rgPsoComputeVulkan* pCreateInfo, const nlohmann::json& file)
+    bool ReadStructure(rgPsoComputeVulkan* pCreateInfo, const nlohmann::json& file)
     {
         bool isLoaded = false;
 
@@ -1742,7 +1766,7 @@ public:
         return isLoaded;
     }
 
-    static void WriteStructure(rgPsoGraphicsVulkan* pCreateInfo, nlohmann::json& file)
+    void WriteStructure(rgPsoGraphicsVulkan* pCreateInfo, nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -1773,7 +1797,7 @@ public:
         }
     }
 
-    static void WriteStructure(rgPsoComputeVulkan* pCreateInfo, nlohmann::json& file)
+    void WriteStructure(rgPsoComputeVulkan* pCreateInfo, nlohmann::json& file)
     {
         assert(pCreateInfo != nullptr);
         if (pCreateInfo != nullptr)
@@ -1796,11 +1820,66 @@ public:
             WriteDescriptorSetLayoutCreateInfoArray(pCreateInfo, file);
         }
     }
-
-private:
-    rgPsoSerializerVulkanImpl() = delete;
-    ~rgPsoSerializerVulkanImpl() = delete;
 };
+
+// This subclass is a version of the pipeline serializer that fixes
+// serializing the VkStencilOpState structure's missing "failOp" member.
+class rgPsoSerializerVulkanImpl_Version_1_1 : public rgPsoSerializerVulkanImpl_Version_1_0
+{
+public:
+    rgPsoSerializerVulkanImpl_Version_1_1() = default;
+    virtual ~rgPsoSerializerVulkanImpl_Version_1_1() = default;
+
+    virtual void WriteStructure(const VkStencilOpState* pCreateInfo, nlohmann::json& file) override
+    {
+        assert(pCreateInfo != nullptr);
+        if (pCreateInfo != nullptr)
+        {
+            file[STR_MEMBER_NAME_FAIL_OP] = pCreateInfo->failOp;
+            file[STR_MEMBER_NAME_PASS_OP] = pCreateInfo->passOp;
+            file[STR_MEMBER_NAME_DEPTH_FAIL_OP] = pCreateInfo->depthFailOp;
+            file[STR_MEMBER_NAME_COMPARE_OP] = pCreateInfo->compareOp;
+            file[STR_MEMBER_NAME_COMPARE_MASK] = pCreateInfo->compareMask;
+            file[STR_MEMBER_NAME_WRITE_MASK] = pCreateInfo->writeMask;
+            file[STR_MEMBER_NAME_REFERENCE] = pCreateInfo->reference;
+        }
+    }
+
+    virtual void ReadStructure(VkStencilOpState* pCreateInfo, const nlohmann::json& file) override
+    {
+        assert(pCreateInfo != nullptr);
+        if (pCreateInfo != nullptr)
+        {
+            pCreateInfo->failOp = file[STR_MEMBER_NAME_FAIL_OP];
+            pCreateInfo->passOp = file[STR_MEMBER_NAME_PASS_OP];
+            pCreateInfo->depthFailOp = file[STR_MEMBER_NAME_DEPTH_FAIL_OP];
+            pCreateInfo->compareOp = file[STR_MEMBER_NAME_COMPARE_OP];
+            pCreateInfo->compareMask = file[STR_MEMBER_NAME_COMPARE_MASK];
+            pCreateInfo->writeMask = file[STR_MEMBER_NAME_WRITE_MASK];
+            pCreateInfo->reference = file[STR_MEMBER_NAME_REFERENCE];
+        }
+    }
+};
+
+std::shared_ptr<rgPsoSerializerVulkanImpl_Version_1_0> CreateSerializer(rgPipelineModelVersion serializerVersion)
+{
+    std::shared_ptr<rgPsoSerializerVulkanImpl_Version_1_0> pSerializer = nullptr;
+
+    switch (serializerVersion)
+    {
+    case rgPipelineModelVersion::VERSION_1_0:
+        pSerializer = std::make_shared<rgPsoSerializerVulkanImpl_Version_1_0>();
+        break;
+    case rgPipelineModelVersion::VERSION_1_1:
+        pSerializer = std::make_shared<rgPsoSerializerVulkanImpl_Version_1_1>();
+        break;
+    default:
+        // If we get here, there is no matching serializer type for the incoming version.
+        assert(false);
+    }
+
+    return pSerializer;
+}
 
 bool rgPsoSerializerVulkan::ReadStructureFromFile(const std::string& filePath, rgPsoGraphicsVulkan** ppCreateInfo, std::string& errorString)
 {
@@ -1827,17 +1906,48 @@ bool rgPsoSerializerVulkan::ReadStructureFromFile(const std::string& filePath, r
             fileStream >> structure;
             fileStream.close();
 
-            // Read the structure data from the JSON file.
-            if (rgPsoSerializerVulkanImpl::ReadStructure(pCreateInfo, structure))
+            // Is there a pipeline model version tag? Extract the version number if possible.
+            rgPipelineModelVersion modelVersion = rgPipelineModelVersion::Unknown;
+            if (IsCreateInfoExists(structure, STR_PIPELINE_MODEL_VERSION))
             {
-                // Assign the deserialized pipeline state file to the output pointer.
-                *ppCreateInfo = pCreateInfo;
-
-                ret = true;
+                modelVersion = static_cast<rgPipelineModelVersion>(structure[STR_PIPELINE_MODEL_VERSION].get<int>());
             }
             else
             {
-                errorString = STR_ERR_FAILED_TO_LOAD_PIPELINE_TYPE_MISMATCH;
+                // Versioning doesn't exist in the initial revision of the pipeline state file.
+                // When the model version tag isn't found, assume VERSION_1_0.
+                modelVersion = rgPipelineModelVersion::VERSION_1_0;
+            }
+
+            assert(modelVersion != rgPipelineModelVersion::Unknown);
+            if (modelVersion != rgPipelineModelVersion::Unknown)
+            {
+                // Always write the most recent version of the pipeline state file.
+                std::shared_ptr<rgPsoSerializerVulkanImpl_Version_1_0> pSerializer = CreateSerializer(modelVersion);
+                assert(pSerializer != nullptr);
+                if (pSerializer != nullptr)
+                {
+                    // Read the structure data from the JSON file.
+                    if (pSerializer->ReadStructure(pCreateInfo, structure))
+                    {
+                        // Assign the deserialized pipeline state file to the output pointer.
+                        *ppCreateInfo = pCreateInfo;
+
+                        ret = true;
+                    }
+                    else
+                    {
+                        errorString = STR_ERR_FAILED_TO_LOAD_PIPELINE_TYPE_MISMATCH;
+                    }
+                }
+                else
+                {
+                    errorString = STR_ERR_FAILED_UNSUPPORTED_VERSION;
+                }
+            }
+            else
+            {
+                errorString = STR_ERR_FAILED_TO_READ_PIPELINE_VERSION;
             }
         }
         else
@@ -1877,16 +1987,46 @@ bool rgPsoSerializerVulkan::ReadStructureFromFile(const std::string& filePath, r
             fileStream >> structure;
             fileStream.close();
 
-            // Read the structure data from the JSON file.
-            if (rgPsoSerializerVulkanImpl::ReadStructure(pCreateInfo, structure))
+            // Is there a pipeline model version tag? Extract the version number if possible.
+            rgPipelineModelVersion modelVersion = rgPipelineModelVersion::Unknown;
+            if (IsCreateInfoExists(structure, STR_PIPELINE_MODEL_VERSION))
             {
-                // Assign the deserialized pipeline state file to the output pointer.
-                *ppCreateInfo = pCreateInfo;
-                ret = true;
+                modelVersion = static_cast<rgPipelineModelVersion>(structure[STR_PIPELINE_MODEL_VERSION].get<int>());
             }
             else
             {
-                errorString = STR_ERR_FAILED_TO_LOAD_PIPELINE_TYPE_MISMATCH;
+                // Versioning doesn't exist in the initial revision of the pipeline state file.
+                // When the model version tag isn't found, assume VERSION_1_0.
+                modelVersion = rgPipelineModelVersion::VERSION_1_0;
+            }
+
+            assert(modelVersion != rgPipelineModelVersion::Unknown);
+            if (modelVersion != rgPipelineModelVersion::Unknown)
+            {
+                // Always write the most recent version of the pipeline state file.
+                std::shared_ptr<rgPsoSerializerVulkanImpl_Version_1_0> pSerializer = CreateSerializer(modelVersion);
+                assert(pSerializer != nullptr);
+                if (pSerializer != nullptr)
+                {
+                    if (pSerializer->ReadStructure(pCreateInfo, structure))
+                    {
+                        // Assign the deserialized pipeline state file to the output pointer.
+                        *ppCreateInfo = pCreateInfo;
+                        ret = true;
+                    }
+                    else
+                    {
+                        errorString = STR_ERR_FAILED_TO_LOAD_PIPELINE_TYPE_MISMATCH;
+                    }
+                }
+                else
+                {
+                    errorString = STR_ERR_FAILED_UNSUPPORTED_VERSION;
+                }
+            }
+            else
+            {
+                errorString = STR_ERR_FAILED_TO_READ_PIPELINE_VERSION;
             }
         }
         else
@@ -1912,13 +2052,27 @@ bool rgPsoSerializerVulkan::WriteStructureToFile(rgPsoGraphicsVulkan* pCreateInf
     if (fileStream.is_open())
     {
         nlohmann::json jsonFile;
-        rgPsoSerializerVulkanImpl::WriteStructure(pCreateInfo, jsonFile);
 
-        // Write the JSON to disk and close the file with the given indentation.
-        fileStream << jsonFile.dump(4);
-        fileStream.close();
+        // Write the current pipeline version into the file.
+        jsonFile[STR_PIPELINE_MODEL_VERSION] = s_CURRENT_PIPELINE_VERSION;
 
-        ret = true;
+        // Always write the most recent version of the pipeline state file.
+        std::shared_ptr<rgPsoSerializerVulkanImpl_Version_1_0> pSerializer = CreateSerializer(s_CURRENT_PIPELINE_VERSION);
+        assert(pSerializer != nullptr);
+        if (pSerializer != nullptr)
+        {
+            pSerializer->WriteStructure(pCreateInfo, jsonFile);
+
+            // Write the JSON to disk and close the file with the given indentation.
+            fileStream << jsonFile.dump(4);
+            fileStream.close();
+
+            ret = true;
+        }
+        else
+        {
+            errorString = STR_ERR_FAILED_UNSUPPORTED_VERSION;
+        }
     }
     else
     {
@@ -1942,13 +2096,27 @@ bool rgPsoSerializerVulkan::WriteStructureToFile(rgPsoComputeVulkan* pCreateInfo
     if (fileStream.is_open())
     {
         nlohmann::json jsonFile;
-        rgPsoSerializerVulkanImpl::WriteStructure(pCreateInfo, jsonFile);
 
-        // Write the JSON to disk and close the file with the given indentation.
-        fileStream << jsonFile.dump(4);
-        fileStream.close();
+        // Write the current pipeline version into the file.
+        jsonFile[STR_PIPELINE_MODEL_VERSION] = s_CURRENT_PIPELINE_VERSION;
 
-        ret = true;
+        // Always write the most recent version of the pipeline state file.
+        std::shared_ptr<rgPsoSerializerVulkanImpl_Version_1_0> pSerializer = CreateSerializer(s_CURRENT_PIPELINE_VERSION);
+        assert(pSerializer != nullptr);
+        if (pSerializer != nullptr)
+        {
+            pSerializer->WriteStructure(pCreateInfo, jsonFile);
+
+            // Write the JSON to disk and close the file with the given indentation.
+            fileStream << jsonFile.dump(4);
+            fileStream.close();
+
+            ret = true;
+        }
+        else
+        {
+            errorString = STR_ERR_FAILED_UNSUPPORTED_VERSION;
+        }
     }
     else
     {
