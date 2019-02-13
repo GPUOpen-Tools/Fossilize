@@ -27,10 +27,13 @@ enum class rgPipelineModelVersion
 
     // This version resolves a failure in reading & writing VkStencilOpState's 'failOp' member.
     VERSION_1_1,
+
+    // This version resolves a failure in reading & writing the multisampling state's VkSampleMask.
+    VERSION_1_2,
 };
 
 // This declaration is used to specify the current schema revision for the pipeline state file.
-static const rgPipelineModelVersion s_CURRENT_PIPELINE_VERSION = rgPipelineModelVersion::VERSION_1_1;
+static const rgPipelineModelVersion s_CURRENT_PIPELINE_VERSION = rgPipelineModelVersion::VERSION_1_2;
 
 // Pipeline CreateInfo member name string constants.
 static const char* STR_PIPELINE_MODEL_VERSION                           = "version";
@@ -716,13 +719,7 @@ public:
             file[STR_MEMBER_NAME_RASTERIZATION_SAMPLE] = pCreateInfo->rasterizationSamples;
             file[STR_MEMBER_NAME_SAMPLE_SHADING_ENABLE] = WriteBool(pCreateInfo->sampleShadingEnable);
             file[STR_MEMBER_NAME_MIN_SAMPLE_SHADING] = pCreateInfo->minSampleShading;
-            if (pCreateInfo->pSampleMask != nullptr)
-            {
-                for (uint32_t index = 0; index < (uint32_t)pCreateInfo->rasterizationSamples; ++index)
-                {
-                    file[STR_MEMBER_NAME_P_SAMPLE_MASK][index] = *(pCreateInfo->pSampleMask + index);
-                }
-            }
+            WriteSampleMask(pCreateInfo, file);
             file[STR_MEMBER_NAME_ALPHA_TO_COVERAGE_ENABLE] = WriteBool(pCreateInfo->alphaToCoverageEnable);
             file[STR_MEMBER_NAME_ALPHA_TO_ONE_ENABLE] = WriteBool(pCreateInfo->alphaToOneEnable);
         }
@@ -739,18 +736,7 @@ public:
             pCreateInfo->rasterizationSamples = file[STR_MEMBER_NAME_RASTERIZATION_SAMPLE];
             pCreateInfo->sampleShadingEnable = ReadBool(file[STR_MEMBER_NAME_SAMPLE_SHADING_ENABLE]);
             pCreateInfo->minSampleShading = file[STR_MEMBER_NAME_MIN_SAMPLE_SHADING];
-
-            VkSampleMask* pSampleMask = nullptr;
-            if (IsCreateInfoExists(file, STR_MEMBER_NAME_P_SAMPLE_MASK))
-            {
-                pSampleMask = new VkSampleMask[(uint32_t)pCreateInfo->rasterizationSamples];
-                for (uint32_t index = 0; index < (uint32_t)pCreateInfo->rasterizationSamples; ++index)
-                {
-                    pSampleMask[index] = file[STR_MEMBER_NAME_P_SAMPLE_MASK][index];
-                }
-            }
-            pCreateInfo->pSampleMask = pSampleMask;
-
+            pCreateInfo->pSampleMask = ReadSampleMask(pCreateInfo, file);
             pCreateInfo->alphaToCoverageEnable = ReadBool(file[STR_MEMBER_NAME_ALPHA_TO_COVERAGE_ENABLE]);
             pCreateInfo->alphaToOneEnable = ReadBool(file[STR_MEMBER_NAME_ALPHA_TO_ONE_ENABLE]);
         }
@@ -1820,6 +1806,31 @@ public:
             WriteDescriptorSetLayoutCreateInfoArray(pCreateInfo, file);
         }
     }
+
+    virtual VkSampleMask* ReadSampleMask(const VkPipelineMultisampleStateCreateInfo* pCreateInfo, const nlohmann::json& file)
+    {
+        VkSampleMask* pSampleMask = nullptr;
+        if (IsCreateInfoExists(file, STR_MEMBER_NAME_P_SAMPLE_MASK))
+        {
+            pSampleMask = new VkSampleMask[(uint32_t)pCreateInfo->rasterizationSamples];
+            for (uint32_t index = 0; index < (uint32_t)pCreateInfo->rasterizationSamples; ++index)
+            {
+                pSampleMask[index] = file[STR_MEMBER_NAME_P_SAMPLE_MASK][index];
+            }
+        }
+        return pSampleMask;
+    }
+
+    virtual void WriteSampleMask(const VkPipelineMultisampleStateCreateInfo* pCreateInfo, nlohmann::json& file)
+    {
+        if (pCreateInfo->pSampleMask != nullptr)
+        {
+            for (uint32_t index = 0; index < (uint32_t)pCreateInfo->rasterizationSamples; ++index)
+            {
+                file[STR_MEMBER_NAME_P_SAMPLE_MASK][index] = *(pCreateInfo->pSampleMask + index);
+            }
+        }
+    }
 };
 
 // This subclass is a version of the pipeline serializer that fixes
@@ -1861,6 +1872,88 @@ public:
     }
 };
 
+// This subclass is a version of the pipeline serializer that fixes
+// serializing the VkSampleMask within a graphics pipeline's multisampling state.
+class rgPsoSerializerVulkanImpl_Version_1_2 : public rgPsoSerializerVulkanImpl_Version_1_1
+{
+public:
+    rgPsoSerializerVulkanImpl_Version_1_2() = default;
+    virtual ~rgPsoSerializerVulkanImpl_Version_1_2() = default;
+
+    virtual VkSampleMask* ReadSampleMask(const VkPipelineMultisampleStateCreateInfo* pCreateInfo, const nlohmann::json& file) override
+    {
+        VkSampleMask* pSampleMask = nullptr;
+        if (IsCreateInfoExists(file, STR_MEMBER_NAME_P_SAMPLE_MASK))
+        {
+            // What's the required dimension of the pSampleMask bitfield array?
+            int sampleMaskArrayDimension = 0;
+            switch (pCreateInfo->rasterizationSamples)
+            {
+            case VK_SAMPLE_COUNT_1_BIT:
+            case VK_SAMPLE_COUNT_2_BIT:
+            case VK_SAMPLE_COUNT_4_BIT:
+            case VK_SAMPLE_COUNT_8_BIT:
+            case VK_SAMPLE_COUNT_16_BIT:
+            case VK_SAMPLE_COUNT_32_BIT:
+                // A single 32-bit value is all that's needed to hold the
+                // pSampleMask bitfield when it's between 1 and 32-bits in size.
+                sampleMaskArrayDimension = 1;
+                break;
+            case VK_SAMPLE_COUNT_64_BIT:
+                // Two 32-bit values are needed to hold the 64-bit pSampleMask bitfield.
+                sampleMaskArrayDimension = 2;
+                break;
+            default:
+                // The RasterizationSamples value was unrecognized, and we can't proceed.
+                assert(false);
+            }
+
+            pSampleMask = new VkSampleMask[sampleMaskArrayDimension]{};
+            for (int index = 0; index < sampleMaskArrayDimension; ++index)
+            {
+                pSampleMask[index] = file[STR_MEMBER_NAME_P_SAMPLE_MASK][index];
+            }
+        }
+        return pSampleMask;
+    }
+
+    virtual void WriteSampleMask(const VkPipelineMultisampleStateCreateInfo* pCreateInfo, nlohmann::json& file) override
+    {
+        // It's fine if pSampleMask is null- just don't write the field.
+        if (pCreateInfo->pSampleMask != nullptr)
+        {
+            // What's the required dimension of the pSampleMask bitfield array?
+            uint32_t sampleMaskArrayDimension = 0;
+            switch (pCreateInfo->rasterizationSamples)
+            {
+            case VK_SAMPLE_COUNT_1_BIT:
+            case VK_SAMPLE_COUNT_2_BIT:
+            case VK_SAMPLE_COUNT_4_BIT:
+            case VK_SAMPLE_COUNT_8_BIT:
+            case VK_SAMPLE_COUNT_16_BIT:
+            case VK_SAMPLE_COUNT_32_BIT:
+                // A single 32-bit value is all that's needed to hold the
+                // pSampleMask bitfield when it's between 1 and 32-bits in size.
+                sampleMaskArrayDimension = 1;
+                break;
+            case VK_SAMPLE_COUNT_64_BIT:
+                // Two 32-bit values are needed to hold the 64-bit pSampleMask bitfield.
+                sampleMaskArrayDimension = 2;
+                break;
+            default:
+                // The RasterizationSamples value was unrecognized, and we can't proceed.
+                assert(false);
+            }
+
+            // Serialize the array of bitfields. It'll either be 1 or 2 32-bit values.
+            for (uint32_t index = 0; index < sampleMaskArrayDimension; ++index)
+            {
+                file[STR_MEMBER_NAME_P_SAMPLE_MASK][index] = *(pCreateInfo->pSampleMask + index);
+            }
+        }
+    }
+};
+
 std::shared_ptr<rgPsoSerializerVulkanImpl_Version_1_0> CreateSerializer(rgPipelineModelVersion serializerVersion)
 {
     std::shared_ptr<rgPsoSerializerVulkanImpl_Version_1_0> pSerializer = nullptr;
@@ -1872,6 +1965,9 @@ std::shared_ptr<rgPsoSerializerVulkanImpl_Version_1_0> CreateSerializer(rgPipeli
         break;
     case rgPipelineModelVersion::VERSION_1_1:
         pSerializer = std::make_shared<rgPsoSerializerVulkanImpl_Version_1_1>();
+        break;
+    case rgPipelineModelVersion::VERSION_1_2:
+        pSerializer = std::make_shared<rgPsoSerializerVulkanImpl_Version_1_2>();
         break;
     default:
         // If we get here, there is no matching serializer type for the incoming version.
